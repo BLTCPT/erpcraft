@@ -1,0 +1,13 @@
+[package]
+name = "erpcraft-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "ERPCraft HTTP server (Axum) over erpcraft-core"
+
+[dependencies]
+erpcraft-core = { path = "../erpcraft-core" }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

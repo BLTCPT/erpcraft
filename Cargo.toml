@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/erpcraft-core", "crates/erpcraft-server"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"

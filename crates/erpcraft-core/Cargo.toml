@@ -1,0 +1,10 @@
+[package]
+name = "erpcraft-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "ERPCraft ledger core: chart of accounts, double-entry journal, trial balance (SQLite, DB-enforced invariants)"
+
+[dependencies]
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
