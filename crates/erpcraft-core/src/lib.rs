@@ -30,6 +30,9 @@ pub type Cents = i64;
 pub const DEMO_COMPANY: &str = "Cascade Precision Parts";
 /// Standard cost of one finished bracket: $68.00 in cents.
 pub const STANDARD_COST_CENTS: Cents = 6_800;
+/// Unit selling price of one finished bracket: $125.00 in cents.
+/// (The oracle day sells 40 units for $5,000.00 of revenue — see DAY3_PREP.)
+pub const BRACKET_UNIT_PRICE_CENTS: Cents = 12_500;
 /// Opening trial-balance total on each side: $120,500.00 in cents.
 pub const OPENING_TOTAL_CENTS: Cents = 12_050_000;
 
@@ -219,6 +222,86 @@ WHEN OLD.status = 'posted'
 BEGIN
     SELECT RAISE(ABORT, 'posted journal entries are immutable');
 END;
+
+-- ---------------------------------------------------------------------------
+-- Day 2: order-to-cash documents. These tables NEVER touch the journal —
+-- GL recognition for document events is Day-3 work. Status values are
+-- pinned by CHECK constraints; the legal *transitions* between them are
+-- enforced by the core API (state machines in the order-to-cash section).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS customers (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id                  INTEGER PRIMARY KEY,
+    sku                 TEXT NOT NULL UNIQUE,
+    name                TEXT NOT NULL,
+    unit_price_cents    INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+    standard_cost_cents INTEGER NOT NULL CHECK (standard_cost_cents >= 0),
+    created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS quotes (
+    id          INTEGER PRIMARY KEY,
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    status      TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft','sent','accepted','declined','expired')),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS quote_lines (
+    id               INTEGER PRIMARY KEY,
+    quote_id         INTEGER NOT NULL REFERENCES quotes(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS sales_orders (
+    id          INTEGER PRIMARY KEY,
+    quote_id    INTEGER NOT NULL UNIQUE REFERENCES quotes(id),
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    status      TEXT NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open','fulfilled','cancelled')),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS order_lines (
+    id               INTEGER PRIMARY KEY,
+    order_id         INTEGER NOT NULL REFERENCES sales_orders(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS invoices (
+    id          INTEGER PRIMARY KEY,
+    order_id    INTEGER NOT NULL UNIQUE REFERENCES sales_orders(id),
+    customer_id INTEGER NOT NULL REFERENCES customers(id),
+    status      TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft','issued','partially_paid','paid','void')),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS invoice_lines (
+    id               INTEGER PRIMARY KEY,
+    invoice_id       INTEGER NOT NULL REFERENCES invoices(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id           INTEGER PRIMARY KEY,
+    invoice_id   INTEGER NOT NULL REFERENCES invoices(id),
+    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    status       TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded')),
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -281,6 +364,7 @@ pub fn open_db(path: &str) -> Result<Connection> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     init_schema(&conn)?;
     seed_if_empty(&mut conn)?;
+    seed_master_data_if_empty(&conn)?;
     Ok(conn)
 }
 
@@ -521,4 +605,816 @@ pub fn entry_count(conn: &Connection) -> Result<i64> {
 /// Count of seeded accounts.
 pub fn account_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?)
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — demo master data (customers, items)
+// ---------------------------------------------------------------------------
+
+/// The four frozen demo customers of Cascade Precision Parts.
+const DEMO_CUSTOMERS: &[&str] = &["Acme", "Beta", "Delta", "Epsilon"];
+
+/// SKU of the one seeded finished good.
+pub const BRACKET_SKU: &str = "BRK-100";
+/// Name of the one seeded finished good.
+pub const BRACKET_NAME: &str = "Finished Bracket";
+
+/// Seed the demo master data: the four customers and the finished bracket.
+/// Returns true if seeding happened (the customers table was empty).
+/// Runs independently of the GL seed so a database created on Day 1 gains
+/// its master data on the next open, and re-opening is a no-op.
+pub fn seed_master_data_if_empty(conn: &Connection) -> Result<bool> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM customers", [], |r| r.get(0))?;
+    if count > 0 {
+        return Ok(false);
+    }
+    for name in DEMO_CUSTOMERS {
+        conn.execute("INSERT INTO customers (name) VALUES (?1)", params![name])?;
+    }
+    conn.execute(
+        "INSERT INTO items (sku, name, unit_price_cents, standard_cost_cents)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            BRACKET_SKU,
+            BRACKET_NAME,
+            BRACKET_UNIT_PRICE_CENTS,
+            STANDARD_COST_CENTS
+        ],
+    )?;
+    Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — data transfer types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomerView {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemView {
+    pub id: i64,
+    pub sku: String,
+    pub name: String,
+    pub unit_price_cents: Cents,
+    pub standard_cost_cents: Cents,
+}
+
+/// One document line. `line_total_cents` is always derived
+/// (qty × unit_price_cents), never stored and never client-supplied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocLineView {
+    pub item_id: i64,
+    pub sku: String,
+    pub qty: i64,
+    pub unit_price_cents: Cents,
+    pub line_total_cents: Cents,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuoteView {
+    pub id: i64,
+    pub customer_id: i64,
+    pub customer_name: String,
+    pub status: String,
+    pub lines: Vec<DocLineView>,
+    /// Derived: sum of the line totals.
+    pub total_cents: Cents,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderView {
+    pub id: i64,
+    /// Source document: the accepted quote this order was created from.
+    pub quote_id: i64,
+    pub customer_id: i64,
+    pub customer_name: String,
+    pub status: String,
+    pub lines: Vec<DocLineView>,
+    /// Derived: sum of the line totals.
+    pub total_cents: Cents,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceView {
+    pub id: i64,
+    /// Source document: the sales order this invoice was created from.
+    pub order_id: i64,
+    pub customer_id: i64,
+    pub customer_name: String,
+    pub status: String,
+    pub lines: Vec<DocLineView>,
+    /// Derived: sum of the line totals.
+    pub total_cents: Cents,
+    /// Derived: sum of recorded payments against this invoice.
+    pub paid_cents: Cents,
+    /// Derived: total − paid.
+    pub balance_cents: Cents,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentView {
+    pub id: i64,
+    /// Source document: the invoice this payment is recorded against.
+    pub invoice_id: i64,
+    pub amount_cents: Cents,
+    pub status: String,
+}
+
+/// One line of a new quote: which item and how many. The unit price is
+/// snapshotted from the item master when the quote is created — it is
+/// never supplied by the caller.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewQuoteLine {
+    pub item_id: i64,
+    pub qty: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewQuote {
+    pub customer_id: i64,
+    pub lines: Vec<NewQuoteLine>,
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — master data reads
+// ---------------------------------------------------------------------------
+
+/// All customers, in seed order.
+pub fn list_customers(conn: &Connection) -> Result<Vec<CustomerView>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM customers ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CustomerView {
+            id: row.get(0)?,
+            name: row.get(1)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// All sellable items.
+pub fn list_items(conn: &Connection) -> Result<Vec<ItemView>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, sku, name, unit_price_cents, standard_cost_cents
+         FROM items ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ItemView {
+            id: row.get(0)?,
+            sku: row.get(1)?,
+            name: row.get(2)?,
+            unit_price_cents: row.get(3)?,
+            standard_cost_cents: row.get(4)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — document internals
+// ---------------------------------------------------------------------------
+
+/// Map a missing-row read to a plain-language `Invalid`; pass real
+/// database errors through untouched.
+fn missing(what: &str, id: i64) -> impl Fn(rusqlite::Error) -> LedgerError {
+    let what = what.to_string();
+    move |e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            LedgerError::Invalid(format!("no {what} with id {id}"))
+        }
+        other => LedgerError::Db(other),
+    }
+}
+
+fn doc_lines(
+    conn: &Connection,
+    lines_table: &str,
+    fk_column: &str,
+    doc_id: i64,
+) -> Result<Vec<DocLineView>> {
+    let sql = format!(
+        "SELECT l.item_id, i.sku, l.qty, l.unit_price_cents
+         FROM {lines_table} l
+         JOIN items i ON i.id = l.item_id
+         WHERE l.{fk_column} = ?1
+         ORDER BY l.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![doc_id], |row| {
+        let qty: i64 = row.get(2)?;
+        let unit_price_cents: Cents = row.get(3)?;
+        Ok(DocLineView {
+            item_id: row.get(0)?,
+            sku: row.get(1)?,
+            qty,
+            unit_price_cents,
+            line_total_cents: qty * unit_price_cents,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+fn lines_total(lines: &[DocLineView]) -> Cents {
+    lines.iter().map(|l| l.line_total_cents).sum()
+}
+
+fn fetch_quote(conn: &Connection, quote_id: i64) -> Result<QuoteView> {
+    let (customer_id, customer_name, status) = conn
+        .query_row(
+            "SELECT q.customer_id, c.name, q.status
+             FROM quotes q JOIN customers c ON c.id = q.customer_id
+             WHERE q.id = ?1",
+            params![quote_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(missing("quote", quote_id))?;
+    let lines = doc_lines(conn, "quote_lines", "quote_id", quote_id)?;
+    let total_cents = lines_total(&lines);
+    Ok(QuoteView {
+        id: quote_id,
+        customer_id,
+        customer_name,
+        status,
+        lines,
+        total_cents,
+    })
+}
+
+fn fetch_order(conn: &Connection, order_id: i64) -> Result<OrderView> {
+    let (quote_id, customer_id, customer_name, status) = conn
+        .query_row(
+            "SELECT o.quote_id, o.customer_id, c.name, o.status
+             FROM sales_orders o JOIN customers c ON c.id = o.customer_id
+             WHERE o.id = ?1",
+            params![order_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(missing("sales order", order_id))?;
+    let lines = doc_lines(conn, "order_lines", "order_id", order_id)?;
+    let total_cents = lines_total(&lines);
+    Ok(OrderView {
+        id: order_id,
+        quote_id,
+        customer_id,
+        customer_name,
+        status,
+        lines,
+        total_cents,
+    })
+}
+
+fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
+    let (order_id, customer_id, customer_name, status) = conn
+        .query_row(
+            "SELECT i.order_id, i.customer_id, c.name, i.status
+             FROM invoices i JOIN customers c ON c.id = i.customer_id
+             WHERE i.id = ?1",
+            params![invoice_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(missing("invoice", invoice_id))?;
+    let lines = doc_lines(conn, "invoice_lines", "invoice_id", invoice_id)?;
+    let total_cents = lines_total(&lines);
+    let paid_cents: Cents = conn.query_row(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE invoice_id = ?1",
+        params![invoice_id],
+        |r| r.get(0),
+    )?;
+    Ok(InvoiceView {
+        id: invoice_id,
+        order_id,
+        customer_id,
+        customer_name,
+        status,
+        lines,
+        total_cents,
+        paid_cents,
+        balance_cents: total_cents - paid_cents,
+    })
+}
+
+/// One legal state-machine step: the states it may start from, the state
+/// it lands in, and the wording used when it is refused.
+struct Transition {
+    from: &'static [&'static str],
+    to: &'static str,
+    action: &'static str,
+    hint: &'static str,
+}
+
+/// Shared state-machine step for quotes, orders and invoices: read the
+/// current status, refuse anything that is not a legal `from` state with
+/// a plain-language reason, then write the new status.
+fn transition(conn: &Connection, table: &str, what: &str, id: i64, step: Transition) -> Result<()> {
+    let status: String = conn
+        .query_row(
+            &format!("SELECT status FROM {table} WHERE id = ?1"),
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(missing(what, id))?;
+    if !step.from.contains(&status.as_str()) {
+        return Err(LedgerError::Invalid(format!(
+            "cannot {} {what} {id}: it is '{status}' — {}",
+            step.action, step.hint
+        )));
+    }
+    conn.execute(
+        &format!("UPDATE {table} SET status = ?1 WHERE id = ?2"),
+        params![step.to, id],
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — quotes
+// ---------------------------------------------------------------------------
+
+/// Create a quote in `draft`. Line prices are snapshotted from the item
+/// master; totals are derived from the lines from then on.
+pub fn create_quote(conn: &mut Connection, new: &NewQuote) -> Result<i64> {
+    if new.lines.is_empty() {
+        return Err(LedgerError::Invalid(
+            "a quote needs at least one line".to_string(),
+        ));
+    }
+    for line in &new.lines {
+        if line.qty <= 0 {
+            return Err(LedgerError::Invalid(
+                "quote line quantities must be positive".to_string(),
+            ));
+        }
+    }
+    let tx = conn.transaction()?;
+    let customer_known: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM customers WHERE id = ?1)",
+        params![new.customer_id],
+        |r| r.get(0),
+    )?;
+    if !customer_known {
+        return Err(LedgerError::Invalid(format!(
+            "unknown customer id {}",
+            new.customer_id
+        )));
+    }
+    tx.execute(
+        "INSERT INTO quotes (customer_id, status) VALUES (?1, 'draft')",
+        params![new.customer_id],
+    )?;
+    let quote_id = tx.last_insert_rowid();
+    for line in &new.lines {
+        let unit_price_cents: Cents = tx
+            .query_row(
+                "SELECT unit_price_cents FROM items WHERE id = ?1",
+                params![line.item_id],
+                |r| r.get(0),
+            )
+            .map_err(|_| LedgerError::Invalid(format!("unknown item id {}", line.item_id)))?;
+        tx.execute(
+            "INSERT INTO quote_lines (quote_id, item_id, qty, unit_price_cents)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![quote_id, line.item_id, line.qty, unit_price_cents],
+        )?;
+    }
+    tx.commit()?;
+    Ok(quote_id)
+}
+
+pub fn get_quote(conn: &Connection, quote_id: i64) -> Result<Option<QuoteView>> {
+    match fetch_quote(conn, quote_id) {
+        Ok(q) => Ok(Some(q)),
+        Err(LedgerError::Invalid(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn list_quotes(conn: &Connection) -> Result<Vec<QuoteView>> {
+    let mut stmt = conn.prepare("SELECT id FROM quotes ORDER BY id")?;
+    let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for id in ids {
+        out.push(fetch_quote(conn, id?)?);
+    }
+    Ok(out)
+}
+
+/// Quote state machine: draft → sent → accepted | declined | expired.
+pub fn send_quote(conn: &mut Connection, quote_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "quotes",
+        "quote",
+        quote_id,
+        Transition {
+            from: &["draft"],
+            to: "sent",
+            action: "send",
+            hint: "only a draft quote can be sent",
+        },
+    )
+}
+
+pub fn accept_quote(conn: &mut Connection, quote_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "quotes",
+        "quote",
+        quote_id,
+        Transition {
+            from: &["sent"],
+            to: "accepted",
+            action: "accept",
+            hint: "a quote must be sent before it can be accepted",
+        },
+    )
+}
+
+pub fn decline_quote(conn: &mut Connection, quote_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "quotes",
+        "quote",
+        quote_id,
+        Transition {
+            from: &["sent"],
+            to: "declined",
+            action: "decline",
+            hint: "only a sent quote can be declined",
+        },
+    )
+}
+
+pub fn expire_quote(conn: &mut Connection, quote_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "quotes",
+        "quote",
+        quote_id,
+        Transition {
+            from: &["sent"],
+            to: "expired",
+            action: "expire",
+            hint: "only a sent quote can expire",
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — sales orders
+// ---------------------------------------------------------------------------
+
+/// Create a sales order from an **accepted** quote, copying its customer
+/// and lines. Any other quote status is refused. One order per quote.
+pub fn create_order_from_quote(conn: &mut Connection, quote_id: i64) -> Result<i64> {
+    let tx = conn.transaction()?;
+    let (customer_id, status): (i64, String) = tx
+        .query_row(
+            "SELECT customer_id, status FROM quotes WHERE id = ?1",
+            params![quote_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(missing("quote", quote_id))?;
+    if status != "accepted" {
+        return Err(LedgerError::Invalid(format!(
+            "cannot create an order from quote {quote_id}: it is '{status}' — \
+             orders are created only from accepted quotes"
+        )));
+    }
+    let existing: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sales_orders WHERE quote_id = ?1",
+        params![quote_id],
+        |r| r.get(0),
+    )?;
+    if existing > 0 {
+        return Err(LedgerError::Invalid(format!(
+            "quote {quote_id} already has a sales order"
+        )));
+    }
+    tx.execute(
+        "INSERT INTO sales_orders (quote_id, customer_id, status)
+         VALUES (?1, ?2, 'open')",
+        params![quote_id, customer_id],
+    )?;
+    let order_id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO order_lines (order_id, item_id, qty, unit_price_cents)
+         SELECT ?1, item_id, qty, unit_price_cents
+         FROM quote_lines WHERE quote_id = ?2",
+        params![order_id, quote_id],
+    )?;
+    tx.commit()?;
+    Ok(order_id)
+}
+
+pub fn get_order(conn: &Connection, order_id: i64) -> Result<Option<OrderView>> {
+    match fetch_order(conn, order_id) {
+        Ok(o) => Ok(Some(o)),
+        Err(LedgerError::Invalid(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn list_orders(conn: &Connection) -> Result<Vec<OrderView>> {
+    let mut stmt = conn.prepare("SELECT id FROM sales_orders ORDER BY id")?;
+    let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for id in ids {
+        out.push(fetch_order(conn, id?)?);
+    }
+    Ok(out)
+}
+
+/// Order state machine: open → fulfilled | cancelled.
+pub fn fulfil_order(conn: &mut Connection, order_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "sales_orders",
+        "sales order",
+        order_id,
+        Transition {
+            from: &["open"],
+            to: "fulfilled",
+            action: "fulfil",
+            hint: "only an open order can be fulfilled",
+        },
+    )
+}
+
+pub fn cancel_order(conn: &mut Connection, order_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "sales_orders",
+        "sales order",
+        order_id,
+        Transition {
+            from: &["open"],
+            to: "cancelled",
+            action: "cancel",
+            hint: "only an open order can be cancelled",
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — invoices and payments
+// ---------------------------------------------------------------------------
+
+/// Create an invoice in `draft` from a sales order, copying its customer
+/// and lines. A cancelled order cannot be invoiced. One invoice per order.
+pub fn create_invoice_from_order(conn: &mut Connection, order_id: i64) -> Result<i64> {
+    let tx = conn.transaction()?;
+    let (customer_id, status): (i64, String) = tx
+        .query_row(
+            "SELECT customer_id, status FROM sales_orders WHERE id = ?1",
+            params![order_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(missing("sales order", order_id))?;
+    if status == "cancelled" {
+        return Err(LedgerError::Invalid(format!(
+            "cannot create an invoice from sales order {order_id}: it is cancelled"
+        )));
+    }
+    let existing: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM invoices WHERE order_id = ?1",
+        params![order_id],
+        |r| r.get(0),
+    )?;
+    if existing > 0 {
+        return Err(LedgerError::Invalid(format!(
+            "sales order {order_id} already has an invoice"
+        )));
+    }
+    tx.execute(
+        "INSERT INTO invoices (order_id, customer_id, status)
+         VALUES (?1, ?2, 'draft')",
+        params![order_id, customer_id],
+    )?;
+    let invoice_id = tx.last_insert_rowid();
+    tx.execute(
+        "INSERT INTO invoice_lines (invoice_id, item_id, qty, unit_price_cents)
+         SELECT ?1, item_id, qty, unit_price_cents
+         FROM order_lines WHERE order_id = ?2",
+        params![invoice_id, order_id],
+    )?;
+    tx.commit()?;
+    Ok(invoice_id)
+}
+
+pub fn get_invoice(conn: &Connection, invoice_id: i64) -> Result<Option<InvoiceView>> {
+    match fetch_invoice(conn, invoice_id) {
+        Ok(i) => Ok(Some(i)),
+        Err(LedgerError::Invalid(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn list_invoices(conn: &Connection) -> Result<Vec<InvoiceView>> {
+    let mut stmt = conn.prepare("SELECT id FROM invoices ORDER BY id")?;
+    let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for id in ids {
+        out.push(fetch_invoice(conn, id?)?);
+    }
+    Ok(out)
+}
+
+/// Invoice state machine: draft → issued → partially_paid → paid | void.
+/// (`paid` is reached only through payments; `void` from any unpaid state.)
+pub fn issue_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "invoices",
+        "invoice",
+        invoice_id,
+        Transition {
+            from: &["draft"],
+            to: "issued",
+            action: "issue",
+            hint: "only a draft invoice can be issued",
+        },
+    )
+}
+
+pub fn void_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
+    transition(
+        conn,
+        "invoices",
+        "invoice",
+        invoice_id,
+        Transition {
+            from: &["draft", "issued", "partially_paid"],
+            to: "void",
+            action: "void",
+            hint: "a paid invoice cannot be voided — corrections are reversing entries",
+        },
+    )
+}
+
+/// Record a payment against an issued invoice and advance its status
+/// (`issued` → `partially_paid` → `paid`). Payments must be positive and
+/// cumulative payments may not exceed the invoice total — overpayment is
+/// refused, never silently accepted.
+pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cents) -> Result<i64> {
+    if amount_cents <= 0 {
+        return Err(LedgerError::Invalid(
+            "a payment amount must be positive".to_string(),
+        ));
+    }
+    let tx = conn.transaction()?;
+    let status: String = tx
+        .query_row(
+            "SELECT status FROM invoices WHERE id = ?1",
+            params![invoice_id],
+            |r| r.get(0),
+        )
+        .map_err(missing("invoice", invoice_id))?;
+    if status != "issued" && status != "partially_paid" {
+        return Err(LedgerError::Invalid(format!(
+            "cannot record a payment on invoice {invoice_id}: it is '{status}' — \
+             payments are accepted only once an invoice is issued"
+        )));
+    }
+    let total_cents: Cents = tx.query_row(
+        "SELECT COALESCE(SUM(qty * unit_price_cents), 0)
+         FROM invoice_lines WHERE invoice_id = ?1",
+        params![invoice_id],
+        |r| r.get(0),
+    )?;
+    let paid_cents: Cents = tx.query_row(
+        "SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE invoice_id = ?1",
+        params![invoice_id],
+        |r| r.get(0),
+    )?;
+    if paid_cents + amount_cents > total_cents {
+        return Err(LedgerError::Invalid(format!(
+            "payment of {amount_cents} cents exceeds the balance of invoice {invoice_id}: \
+             it totals {total_cents} cents with {paid_cents} cents already paid"
+        )));
+    }
+    tx.execute(
+        "INSERT INTO payments (invoice_id, amount_cents, status)
+         VALUES (?1, ?2, 'recorded')",
+        params![invoice_id, amount_cents],
+    )?;
+    let payment_id = tx.last_insert_rowid();
+    let new_status = if paid_cents + amount_cents == total_cents {
+        "paid"
+    } else {
+        "partially_paid"
+    };
+    tx.execute(
+        "UPDATE invoices SET status = ?1 WHERE id = ?2",
+        params![new_status, invoice_id],
+    )?;
+    tx.commit()?;
+    Ok(payment_id)
+}
+
+pub fn list_payments(conn: &Connection) -> Result<Vec<PaymentView>> {
+    let mut stmt =
+        conn.prepare("SELECT id, invoice_id, amount_cents, status FROM payments ORDER BY id")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(PaymentView {
+            id: row.get(0)?,
+            invoice_id: row.get(1)?,
+            amount_cents: row.get(2)?,
+            status: row.get(3)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Payments recorded against one invoice, oldest first.
+pub fn list_payments_for_invoice(conn: &Connection, invoice_id: i64) -> Result<Vec<PaymentView>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, invoice_id, amount_cents, status FROM payments
+         WHERE invoice_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![invoice_id], |row| {
+        Ok(PaymentView {
+            id: row.get(0)?,
+            invoice_id: row.get(1)?,
+            amount_cents: row.get(2)?,
+            status: row.get(3)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Day 2: order-to-cash — counts (health checks, tests)
+// ---------------------------------------------------------------------------
+
+/// Count of seeded customers.
+pub fn customer_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM customers", [], |r| r.get(0))?)
+}
+
+/// Count of seeded items.
+pub fn item_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM items", [], |r| r.get(0))?)
+}
+
+/// Count of quotes (any status).
+pub fn quote_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM quotes", [], |r| r.get(0))?)
+}
+
+/// Count of sales orders (any status).
+pub fn order_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM sales_orders", [], |r| r.get(0))?)
+}
+
+/// Count of invoices (any status).
+pub fn invoice_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM invoices", [], |r| r.get(0))?)
+}
+
+/// Count of recorded payments.
+pub fn payment_count(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM payments", [], |r| r.get(0))?)
 }
