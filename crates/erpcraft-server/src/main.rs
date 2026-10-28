@@ -2,9 +2,11 @@
 //!
 //! Day 1 surface: health/root, chart of accounts, trial balance, and journal
 //! posting/read-back. Day 2 adds the order-to-cash documents (customers,
-//! items, quotes, sales orders, invoices, payments) — documents only, no GL
-//! postings. Every write goes through the ledger core; invariant violations
-//! come back as 400 with the core's plain-language message.
+//! items, quotes, sales orders, invoices, payments). Day 3 adds the GL
+//! posting engine behind those transitions (in the core) plus the
+//! account ledger view (`GET /accounts/{code}/entries`). Every write goes
+//! through the ledger core; invariant violations come back as 400 with the
+//! core's plain-language message.
 
 use axum::{
     extract::{Path, State},
@@ -14,15 +16,16 @@ use axum::{
 };
 use erpcraft_core::rusqlite::Connection;
 use erpcraft_core::{
-    accept_quote, account_count, add_characteristic, cancel_order, config_model_count,
-    create_component, create_config_model, create_dependency, create_invoice_from_order,
-    create_order_from_quote, create_quote, customer_count, decline_quote, entry_count, evaluate,
-    expire_quote, fulfil_order, get_config_model, get_entry, get_invoice, get_order, get_quote,
-    invoice_count, issue_invoice, list_accounts, list_config_models, list_customers, list_entries,
-    list_invoices, list_items, list_orders, list_payments, list_payments_for_invoice, list_quotes,
-    open_db, order_count, payment_count, post_entry, quote_count, record_payment, send_quote,
-    trial_balance, void_invoice, ConfigValue, Explanation, LedgerError, NewCharacteristic,
-    NewComponent, NewConfigModel, NewDependency, NewEntry, NewQuote, DEMO_COMPANY,
+    accept_quote, account_count, account_ledger, add_characteristic, cancel_order,
+    config_model_count, create_component, create_config_model, create_dependency,
+    create_invoice_from_order, create_order_from_quote, create_quote, customer_count,
+    decline_quote, entry_count, evaluate, expire_quote, fulfil_order, get_config_model, get_entry,
+    get_invoice, get_order, get_quote, invoice_count, issue_invoice, list_accounts,
+    list_config_models, list_customers, list_entries, list_invoices, list_items, list_orders,
+    list_payments, list_payments_for_invoice, list_quotes, open_db, order_count, payment_count,
+    post_entry, quote_count, record_payment, send_quote, trial_balance, void_invoice, ConfigValue,
+    Explanation, LedgerError, NewCharacteristic, NewComponent, NewConfigModel, NewDependency,
+    NewEntry, NewQuote, DEMO_COMPANY,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -129,7 +132,7 @@ async fn root() -> Json<RootInfo> {
     Json(RootInfo {
         name: "ERPCraft",
         vision: "A free, open-source, clean-room ERP in Rust — AI-native from day one.",
-        status: "alpha: ledger core + order-to-cash documents + variant configurator (typed dependencies, deterministic evaluation, roll-up pricing — no GL postings yet)",
+        status: "alpha: ledger core + order-to-cash with GL posting engine + variant configurator (typed dependencies, deterministic evaluation, roll-up pricing)",
         demo_company: DEMO_COMPANY,
     })
 }
@@ -161,6 +164,23 @@ async fn trial_balance_handler(
     let conn = db.lock().expect("db lock");
     let tb = trial_balance(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::to_value(tb).expect("serializable")))
+}
+
+/// Day 3: the account ledger — one account's posted lines in entry order
+/// with a running balance. An unknown account code is a 404.
+async fn account_entries_handler(
+    State(db): State<SharedDb>,
+    Path(code): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    match account_ledger(&conn, &code) {
+        Ok(ledger) => Ok(Json(serde_json::to_value(ledger).expect("serializable"))),
+        Err(LedgerError::UnknownAccount(_)) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody::plain(format!("no account with code {code}"))),
+        )),
+        Err(e) => Err(server_error(e)),
+    }
 }
 
 async fn list_entries_handler(
@@ -558,6 +578,7 @@ async fn main() {
         .route("/", get(root))
         .route("/health", get(health))
         .route("/accounts", get(accounts))
+        .route("/accounts/{code}/entries", get(account_entries_handler))
         .route("/trial-balance", get(trial_balance_handler))
         .route("/journal-entries", get(list_entries_handler))
         .route("/journal-entries", post(post_entry_handler))

@@ -18,7 +18,7 @@
 //! a single balanced journal entry (the start-of-day trial balance totals
 //! $120,500.00 on both sides).
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -115,6 +115,33 @@ pub struct TrialBalance {
     pub rows: Vec<TrialBalanceRow>,
     pub total_debit_cents: Cents,
     pub total_credit_cents: Cents,
+}
+
+/// One line of an account ledger: the journal line itself plus the
+/// account's running balance after it. The running balance uses the
+/// ledger's one signed convention (debits − credits, exactly like
+/// [`AccountView::balance_cents`] and the trial balance): positive means
+/// a debit balance, negative a credit balance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountLedgerLine {
+    pub entry_id: i64,
+    pub entry_date: String,
+    pub memo: String,
+    pub source: String,
+    pub debit_cents: Cents,
+    pub credit_cents: Cents,
+    pub running_balance_cents: Cents,
+}
+
+/// An account's full posted history in entry order, with running balances.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountLedger {
+    pub code: String,
+    pub name: String,
+    pub account_type: String,
+    pub lines: Vec<AccountLedgerLine>,
+    /// The account's closing balance (debits − credits over posted entries).
+    pub balance_cents: Cents,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,10 +272,13 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
--- Day 2: order-to-cash documents. These tables NEVER touch the journal —
--- GL recognition for document events is Day-3 work. Status values are
--- pinned by CHECK constraints; the legal *transitions* between them are
--- enforced by the core API (state machines in the order-to-cash section).
+-- Day 2: order-to-cash documents. Status values are pinned by CHECK
+-- constraints; the legal *transitions* between them are enforced by the
+-- core API (state machines in the order-to-cash section). Day 3 adds the
+-- GL posting engine: the invoice-issuance and payment transitions post
+-- balanced journal entries in the same transaction as the status change,
+-- and the document headers record the entry ids (gl_entry_id /
+-- cogs_entry_id) as a double-post guard.
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS customers (
@@ -304,12 +334,14 @@ CREATE TABLE IF NOT EXISTS order_lines (
 );
 
 CREATE TABLE IF NOT EXISTS invoices (
-    id          INTEGER PRIMARY KEY,
-    order_id    INTEGER NOT NULL UNIQUE REFERENCES sales_orders(id),
-    customer_id INTEGER NOT NULL REFERENCES customers(id),
-    status      TEXT NOT NULL DEFAULT 'draft'
-                CHECK (status IN ('draft','issued','partially_paid','paid','void')),
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY,
+    order_id      INTEGER NOT NULL UNIQUE REFERENCES sales_orders(id),
+    customer_id   INTEGER NOT NULL REFERENCES customers(id),
+    status        TEXT NOT NULL DEFAULT 'draft'
+                  CHECK (status IN ('draft','issued','partially_paid','paid','void')),
+    gl_entry_id   INTEGER REFERENCES journal_entries(id),
+    cogs_entry_id INTEGER REFERENCES journal_entries(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS invoice_lines (
@@ -327,7 +359,22 @@ CREATE TABLE IF NOT EXISTS payments (
     invoice_id   INTEGER NOT NULL REFERENCES invoices(id),
     amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
     status       TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded')),
+    gl_entry_id  INTEGER REFERENCES journal_entries(id),
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Day 3: sales returns. A return posts two reversing journal entries
+-- (see record_sales_return); these rows are the per-item record of what
+-- was returned, so cumulative returned quantities can be checked against
+-- the invoiced quantities. Append-only in spirit: rows are never updated.
+CREATE TABLE IF NOT EXISTS sales_return_lines (
+    id               INTEGER PRIMARY KEY,
+    invoice_id       INTEGER NOT NULL REFERENCES invoices(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    revenue_entry_id INTEGER NOT NULL REFERENCES journal_entries(id),
+    cogs_entry_id    INTEGER NOT NULL REFERENCES journal_entries(id),
+    created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ---------------------------------------------------------------------------
@@ -465,6 +512,11 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         ensure_column(conn, table, "standard_cost_cents", "INTEGER")?;
         ensure_column(conn, table, "configuration", "TEXT")?;
     }
+    // Day-3 migration: the double-post guard columns on document headers,
+    // for databases created before the posting engine.
+    ensure_column(conn, "invoices", "gl_entry_id", "INTEGER")?;
+    ensure_column(conn, "invoices", "cogs_entry_id", "INTEGER")?;
+    ensure_column(conn, "payments", "gl_entry_id", "INTEGER")?;
     Ok(())
 }
 
@@ -533,6 +585,18 @@ pub fn seed_if_empty(conn: &mut Connection) -> Result<bool> {
 /// validates the double-entry invariant at that moment. Any violation aborts
 /// the transaction and nothing persists. Returns the new entry id.
 pub fn post_entry(conn: &mut Connection, new: &NewEntry) -> Result<i64> {
+    let tx = conn.transaction()?;
+    let entry_id = post_entry_in(&tx, new)?;
+    tx.commit()?;
+    Ok(entry_id)
+}
+
+/// The posting path inside a transaction the caller owns. This is the
+/// *only* way entries are written — the Day-3 posting engine calls it
+/// inside the same transaction as the document transition it belongs to,
+/// so a posting failure rolls the transition back with it. The database
+/// triggers remain the enforcer; this function never bypasses them.
+fn post_entry_in(tx: &Transaction, new: &NewEntry) -> Result<i64> {
     if new.lines.len() < 2 {
         return Err(LedgerError::Invalid(
             "a journal entry needs at least two lines".to_string(),
@@ -558,7 +622,6 @@ pub fn post_entry(conn: &mut Connection, new: &NewEntry) -> Result<i64> {
         }
     }
 
-    let tx = conn.transaction()?;
     tx.execute(
         "INSERT INTO journal_entries (entry_date, memo, source, reverses_entry_id, status)
          VALUES (?1, ?2, ?3, ?4, 'draft')",
@@ -584,7 +647,6 @@ pub fn post_entry(conn: &mut Connection, new: &NewEntry) -> Result<i64> {
         "UPDATE journal_entries SET status = 'posted' WHERE id = ?1",
         params![entry_id],
     )?;
-    tx.commit()?;
     Ok(entry_id)
 }
 
@@ -642,6 +704,60 @@ pub fn trial_balance(conn: &Connection) -> Result<TrialBalance> {
         rows,
         total_debit_cents: total_debit,
         total_credit_cents: total_credit,
+    })
+}
+
+/// The account ledger for one account: every posted journal line touching
+/// it, in entry order, with the running balance after each line. Posted
+/// entries only — the same population the trial balance reports. Unknown
+/// account codes are [`LedgerError::UnknownAccount`].
+pub fn account_ledger(conn: &Connection, code: &str) -> Result<AccountLedger> {
+    let (name, account_type) = conn
+        .query_row(
+            "SELECT name, account_type FROM accounts WHERE code = ?1",
+            params![code],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .map_err(|_| LedgerError::UnknownAccount(code.to_string()))?;
+    let mut stmt = conn.prepare(
+        "SELECT e.id, e.entry_date, e.memo, e.source, l.debit_cents, l.credit_cents
+         FROM journal_lines l
+         JOIN journal_entries e ON e.id = l.entry_id
+         JOIN accounts a ON a.id = l.account_id
+         WHERE a.code = ?1 AND e.status = 'posted'
+         ORDER BY e.id, l.id",
+    )?;
+    let rows = stmt.query_map(params![code], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Cents>(4)?,
+            row.get::<_, Cents>(5)?,
+        ))
+    })?;
+    let mut lines = Vec::new();
+    let mut running: Cents = 0;
+    for r in rows {
+        let (entry_id, entry_date, memo, source, debit_cents, credit_cents) = r?;
+        running += debit_cents - credit_cents;
+        lines.push(AccountLedgerLine {
+            entry_id,
+            entry_date,
+            memo,
+            source,
+            debit_cents,
+            credit_cents,
+            running_balance_cents: running,
+        });
+    }
+    Ok(AccountLedger {
+        code: code.to_string(),
+        name,
+        account_type,
+        lines,
+        balance_cents: running,
     })
 }
 
@@ -831,6 +947,11 @@ pub struct InvoiceView {
     pub paid_cents: Cents,
     /// Derived: total − paid.
     pub balance_cents: Cents,
+    /// Day-3 double-post guard: the revenue entry posted at issuance
+    /// (`None` while the invoice is still a draft).
+    pub gl_entry_id: Option<i64>,
+    /// Day-3 double-post guard: the COGS entry posted at issuance.
+    pub cogs_entry_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -840,6 +961,17 @@ pub struct PaymentView {
     pub invoice_id: i64,
     pub amount_cents: Cents,
     pub status: String,
+    /// Day-3 double-post guard: the cash entry posted with this payment.
+    pub gl_entry_id: Option<i64>,
+}
+
+/// One line of a sales return: which invoiced item and how many units
+/// come back. Prices and costs are read from the invoice line's
+/// snapshots — never supplied by the caller.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReturnLine {
+    pub item_id: i64,
+    pub qty: i64,
 }
 
 /// One line of a new quote: which item and how many. The unit price is
@@ -1026,9 +1158,9 @@ fn fetch_order(conn: &Connection, order_id: i64) -> Result<OrderView> {
 }
 
 fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
-    let (order_id, customer_id, customer_name, status) = conn
+    let (order_id, customer_id, customer_name, status, gl_entry_id, cogs_entry_id) = conn
         .query_row(
-            "SELECT i.order_id, i.customer_id, c.name, i.status
+            "SELECT i.order_id, i.customer_id, c.name, i.status, i.gl_entry_id, i.cogs_entry_id
              FROM invoices i JOIN customers c ON c.id = i.customer_id
              WHERE i.id = ?1",
             params![invoice_id],
@@ -1038,6 +1170,8 @@ fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
                     r.get::<_, i64>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
                 ))
             },
         )
@@ -1059,6 +1193,8 @@ fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
         total_cents,
         paid_cents,
         balance_cents: total_cents - paid_cents,
+        gl_entry_id,
+        cogs_entry_id,
     })
 }
 
@@ -1505,6 +1641,73 @@ pub fn cancel_order(conn: &mut Connection, order_id: i64) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Day 3: the GL posting engine
+//
+// Document transitions post balanced journal entries in the SAME SQLite
+// transaction as the status change — if a posting fails, the transition
+// rolls back with it. The map (DAY3_PREP.md):
+//
+//   invoice draft → issued : Dr 1100 AR / Cr 4000 Revenue (invoice total)
+//                            Dr 5000 COGS / Cr 1220 Finished Goods (COGS)
+//   payment recorded       : Dr 1000 Cash / Cr 1100 AR (payment amount)
+//   sales return           : two reversing entries (record_sales_return)
+//
+// COGS is Σ(qty × invoice_lines.standard_cost_cents) — the LINE SNAPSHOT
+// taken at quote time, never the item master: configured lines carry
+// rolled-up costs (e.g. $91.00, not $68.00). Revenue is the invoice total,
+// which derives from the lines' snapshotted prices. A NULL line standard
+// cost at issuance refuses the transition outright.
+//
+// Double-post guard: the entry ids are stored on the document header
+// (invoices.gl_entry_id / cogs_entry_id, payments.gl_entry_id) and a
+// transition whose ids are already set never posts again. Postings go
+// through post_entry_in — the one posting path — so the DB triggers
+// enforce the invariant exactly as for manual entries.
+// ---------------------------------------------------------------------------
+
+const ACCT_CASH: &str = "1000";
+const ACCT_AR: &str = "1100";
+const ACCT_FINISHED_GOODS: &str = "1220";
+const ACCT_REVENUE: &str = "4000";
+const ACCT_SALES_RETURNS: &str = "4010";
+const ACCT_COGS: &str = "5000";
+
+/// A balanced two-line entry: one debit line, one credit line, same amount.
+fn two_line_entry(
+    entry_date: &str,
+    memo: String,
+    source: String,
+    reverses_entry_id: Option<i64>,
+    debit_account: &str,
+    credit_account: &str,
+    amount_cents: Cents,
+) -> NewEntry {
+    NewEntry {
+        entry_date: entry_date.to_string(),
+        memo,
+        source,
+        reverses_entry_id,
+        lines: vec![
+            NewLine {
+                account_code: debit_account.to_string(),
+                debit_cents: amount_cents,
+                credit_cents: 0,
+            },
+            NewLine {
+                account_code: credit_account.to_string(),
+                debit_cents: 0,
+                credit_cents: amount_cents,
+            },
+        ],
+    }
+}
+
+/// The date part (`YYYY-MM-DD`) of a `datetime('now')` timestamp.
+fn date_part(timestamp: &str) -> String {
+    timestamp.chars().take(10).collect()
+}
+
+// ---------------------------------------------------------------------------
 // Day 2: order-to-cash — invoices and payments
 // ---------------------------------------------------------------------------
 
@@ -1570,19 +1773,105 @@ pub fn list_invoices(conn: &Connection) -> Result<Vec<InvoiceView>> {
 
 /// Invoice state machine: draft → issued → partially_paid → paid | void.
 /// (`paid` is reached only through payments; `void` from any unpaid state.)
+///
+/// Issuance is the revenue-recognition point (Day 3): it posts the
+/// revenue entry (Dr AR / Cr Revenue, invoice total) and the COGS entry
+/// (Dr COGS / Cr Finished Goods, from the lines' standard-cost
+/// snapshots) in the same transaction as the status change. A line
+/// whose standard-cost snapshot is NULL refuses the transition — the
+/// invoice stays `draft` and nothing posts. Re-issuing an invoice whose
+/// GL entries already exist is refused, never double-posted.
 pub fn issue_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
-    transition(
-        conn,
-        "invoices",
-        "invoice",
-        invoice_id,
-        Transition {
-            from: &["draft"],
-            to: "issued",
-            action: "issue",
-            hint: "only a draft invoice can be issued",
-        },
-    )
+    let tx = conn.transaction()?;
+    let (status, gl_entry_id, cogs_entry_id, created_at) = tx
+        .query_row(
+            "SELECT status, gl_entry_id, cogs_entry_id, created_at
+             FROM invoices WHERE id = ?1",
+            params![invoice_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(missing("invoice", invoice_id))?;
+    if gl_entry_id.is_some() || cogs_entry_id.is_some() {
+        return Err(LedgerError::Invalid(format!(
+            "invoice {invoice_id} has already posted its GL entries — \
+             issuing it again would double-post"
+        )));
+    }
+    if status != "draft" {
+        return Err(LedgerError::Invalid(format!(
+            "cannot issue invoice {invoice_id}: it is '{status}' — \
+             only a draft invoice can be issued"
+        )));
+    }
+    let lines = doc_lines(&tx, "invoice_lines", "invoice_id", invoice_id)?;
+    if lines.is_empty() {
+        return Err(LedgerError::Invalid(format!(
+            "cannot issue invoice {invoice_id}: it has no lines"
+        )));
+    }
+    let total_cents = lines_total(&lines);
+    // COGS from the line snapshots (the addendum rule) — never the item
+    // master. A NULL snapshot is the missing-standard-cost case: refuse.
+    let mut cogs_cents: Cents = 0;
+    for line in &lines {
+        match line.standard_cost_cents {
+            Some(unit_cost) => cogs_cents += line.qty * unit_cost,
+            None => {
+                return Err(LedgerError::Invalid(format!(
+                    "cannot issue invoice {invoice_id}: the line for {} has no \
+                     standard-cost snapshot — COGS cannot be posted, so the \
+                     invoice stays in draft",
+                    line.sku
+                )));
+            }
+        }
+    }
+    if total_cents <= 0 {
+        return Err(LedgerError::Invalid(format!(
+            "cannot issue invoice {invoice_id}: its total is {total_cents} cents — \
+             there is no revenue to recognize"
+        )));
+    }
+    let entry_date = date_part(&created_at);
+    let source = format!("invoice:{invoice_id}");
+    let revenue_entry_id = post_entry_in(
+        &tx,
+        &two_line_entry(
+            &entry_date,
+            format!("Invoice {invoice_id} issued — revenue"),
+            source.clone(),
+            None,
+            ACCT_AR,
+            ACCT_REVENUE,
+            total_cents,
+        ),
+    )?;
+    let cogs_entry_id = post_entry_in(
+        &tx,
+        &two_line_entry(
+            &entry_date,
+            format!("Invoice {invoice_id} issued — cost of goods sold"),
+            source,
+            None,
+            ACCT_COGS,
+            ACCT_FINISHED_GOODS,
+            cogs_cents,
+        ),
+    )?;
+    tx.execute(
+        "UPDATE invoices SET status = 'issued', gl_entry_id = ?1, cogs_entry_id = ?2
+         WHERE id = ?3",
+        params![revenue_entry_id, cogs_entry_id, invoice_id],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn void_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
@@ -1603,7 +1892,10 @@ pub fn void_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
 /// Record a payment against an issued invoice and advance its status
 /// (`issued` → `partially_paid` → `paid`). Payments must be positive and
 /// cumulative payments may not exceed the invoice total — overpayment is
-/// refused, never silently accepted.
+/// refused, never silently accepted. Day 3: recording a payment posts
+/// Dr Cash / Cr AR for its amount in the same transaction, and the entry
+/// id is stored on the payment (`gl_entry_id`) as its double-post guard.
+/// A refused payment (draft invoice, overpayment) posts nothing.
 pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cents) -> Result<i64> {
     if amount_cents <= 0 {
         return Err(LedgerError::Invalid(
@@ -1647,6 +1939,28 @@ pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cent
         params![invoice_id, amount_cents],
     )?;
     let payment_id = tx.last_insert_rowid();
+    // The payment's own GL posting, atomic with the payment row.
+    let created_at: String = tx.query_row(
+        "SELECT created_at FROM payments WHERE id = ?1",
+        params![payment_id],
+        |r| r.get(0),
+    )?;
+    let gl_entry_id = post_entry_in(
+        &tx,
+        &two_line_entry(
+            &date_part(&created_at),
+            format!("Payment {payment_id} recorded on invoice {invoice_id}"),
+            format!("payment:{payment_id}"),
+            None,
+            ACCT_CASH,
+            ACCT_AR,
+            amount_cents,
+        ),
+    )?;
+    tx.execute(
+        "UPDATE payments SET gl_entry_id = ?1 WHERE id = ?2",
+        params![gl_entry_id, payment_id],
+    )?;
     let new_status = if paid_cents + amount_cents == total_cents {
         "paid"
     } else {
@@ -1660,15 +1974,162 @@ pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cent
     Ok(payment_id)
 }
 
+/// Record a sales return against an issued invoice. A return never edits
+/// the original postings: it posts two NEW reversing entries, each with
+/// `reverses_entry_id` pointing at the invoice entry it corrects —
+/// Dr Sales Returns / Cr AR (at the lines' snapshotted prices) reversing
+/// the revenue entry, and Dr Finished Goods / Cr COGS (at the lines'
+/// snapshotted standard costs) reversing the COGS entry — both with
+/// source `return:<invoice_id>`. The originals stay byte-unchanged.
+///
+/// The invoice must be issued (`issued` / `partially_paid` / `paid`); a
+/// return against a draft is refused. Quantities are checked against
+/// the invoiced quantities net of earlier returns (tracked in
+/// `sales_return_lines`): returning more than was invoiced is refused.
+/// Returns the two new entry ids (revenue reversal, COGS reversal).
+/// The invoice's status is unchanged — a return is a correction, not a
+/// state transition.
+pub fn record_sales_return(
+    conn: &mut Connection,
+    invoice_id: i64,
+    lines: &[ReturnLine],
+) -> Result<(i64, i64)> {
+    if lines.is_empty() {
+        return Err(LedgerError::Invalid(
+            "a sales return needs at least one line".to_string(),
+        ));
+    }
+    // Aggregate duplicate items so the quantity check sees the whole return.
+    let mut wanted: BTreeMap<i64, i64> = BTreeMap::new();
+    for line in lines {
+        if line.qty <= 0 {
+            return Err(LedgerError::Invalid(
+                "sales return quantities must be positive".to_string(),
+            ));
+        }
+        *wanted.entry(line.item_id).or_default() += line.qty;
+    }
+
+    let tx = conn.transaction()?;
+    let (status, orig_revenue_entry_id, orig_cogs_entry_id) = tx
+        .query_row(
+            "SELECT status, gl_entry_id, cogs_entry_id FROM invoices WHERE id = ?1",
+            params![invoice_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .map_err(missing("invoice", invoice_id))?;
+    if !matches!(status.as_str(), "issued" | "partially_paid" | "paid") {
+        return Err(LedgerError::Invalid(format!(
+            "cannot record a sales return against invoice {invoice_id}: it is '{status}' — \
+             returns apply only to issued invoices"
+        )));
+    }
+    let (Some(orig_revenue_entry_id), Some(orig_cogs_entry_id)) =
+        (orig_revenue_entry_id, orig_cogs_entry_id)
+    else {
+        return Err(LedgerError::Invalid(format!(
+            "invoice {invoice_id} has no GL entries to reverse — it was not posted by the engine"
+        )));
+    };
+
+    let invoice_lines = doc_lines(&tx, "invoice_lines", "invoice_id", invoice_id)?;
+    let mut revenue_cents: Cents = 0;
+    let mut cogs_cents: Cents = 0;
+    for (item_id, qty) in &wanted {
+        let inv_line = invoice_lines
+            .iter()
+            .find(|l| l.item_id == *item_id)
+            .ok_or_else(|| {
+                LedgerError::Invalid(format!(
+                    "item {item_id} is not a line on invoice {invoice_id} — \
+                     only invoiced items can be returned"
+                ))
+            })?;
+        let already_returned: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(qty), 0) FROM sales_return_lines
+             WHERE invoice_id = ?1 AND item_id = ?2",
+            params![invoice_id, item_id],
+            |r| r.get(0),
+        )?;
+        if already_returned + qty > inv_line.qty {
+            return Err(LedgerError::Invalid(format!(
+                "returning {qty} more of {} against invoice {invoice_id} exceeds the \
+                 invoiced quantity {} ({} already returned)",
+                inv_line.sku, inv_line.qty, already_returned
+            )));
+        }
+        revenue_cents += qty * inv_line.unit_price_cents;
+        match inv_line.standard_cost_cents {
+            Some(unit_cost) => cogs_cents += qty * unit_cost,
+            None => {
+                return Err(LedgerError::Invalid(format!(
+                    "cannot return {} against invoice {invoice_id}: the invoice line \
+                     has no standard-cost snapshot",
+                    inv_line.sku
+                )));
+            }
+        }
+    }
+    if revenue_cents <= 0 || cogs_cents <= 0 {
+        return Err(LedgerError::Invalid(
+            "a sales return must move a positive amount of revenue and cost".to_string(),
+        ));
+    }
+
+    let today: String = tx.query_row("SELECT date('now')", [], |r| r.get(0))?;
+    let source = format!("return:{invoice_id}");
+    let revenue_entry_id = post_entry_in(
+        &tx,
+        &two_line_entry(
+            &today,
+            format!("Sales return against invoice {invoice_id} — revenue reversal"),
+            source.clone(),
+            Some(orig_revenue_entry_id),
+            ACCT_SALES_RETURNS,
+            ACCT_AR,
+            revenue_cents,
+        ),
+    )?;
+    let restock_entry_id = post_entry_in(
+        &tx,
+        &two_line_entry(
+            &today,
+            format!("Sales return against invoice {invoice_id} — goods restocked"),
+            source,
+            Some(orig_cogs_entry_id),
+            ACCT_FINISHED_GOODS,
+            ACCT_COGS,
+            cogs_cents,
+        ),
+    )?;
+    for (item_id, qty) in &wanted {
+        tx.execute(
+            "INSERT INTO sales_return_lines (invoice_id, item_id, qty, revenue_entry_id, cogs_entry_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![invoice_id, item_id, qty, revenue_entry_id, restock_entry_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok((revenue_entry_id, restock_entry_id))
+}
+
 pub fn list_payments(conn: &Connection) -> Result<Vec<PaymentView>> {
-    let mut stmt =
-        conn.prepare("SELECT id, invoice_id, amount_cents, status FROM payments ORDER BY id")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, invoice_id, amount_cents, status, gl_entry_id FROM payments ORDER BY id",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok(PaymentView {
             id: row.get(0)?,
             invoice_id: row.get(1)?,
             amount_cents: row.get(2)?,
             status: row.get(3)?,
+            gl_entry_id: row.get(4)?,
         })
     })?;
     let mut out = Vec::new();
@@ -1681,7 +2142,7 @@ pub fn list_payments(conn: &Connection) -> Result<Vec<PaymentView>> {
 /// Payments recorded against one invoice, oldest first.
 pub fn list_payments_for_invoice(conn: &Connection, invoice_id: i64) -> Result<Vec<PaymentView>> {
     let mut stmt = conn.prepare(
-        "SELECT id, invoice_id, amount_cents, status FROM payments
+        "SELECT id, invoice_id, amount_cents, status, gl_entry_id FROM payments
          WHERE invoice_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map(params![invoice_id], |row| {
@@ -1690,6 +2151,7 @@ pub fn list_payments_for_invoice(conn: &Connection, invoice_id: i64) -> Result<V
             invoice_id: row.get(1)?,
             amount_cents: row.get(2)?,
             status: row.get(3)?,
+            gl_entry_id: row.get(4)?,
         })
     })?;
     let mut out = Vec::new();

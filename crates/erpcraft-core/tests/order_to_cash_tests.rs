@@ -2,16 +2,18 @@
 //!
 //! The Day-2 contract: quote → order → invoice → payment flows through the
 //! document state machines, totals are always derived from lines, illegal
-//! jumps are refused — and none of it posts to the general ledger. GL
-//! recognition is Day 3; the no-GL guard test here is what keeps the two
-//! days cleanly separated.
+//! jumps are refused. Day 3 reconciled the GL side: quotes, orders and
+//! draft invoices still post nothing, but issuance and payments now post
+//! exactly the mapped GL entries in the same transaction as the
+//! transition — test 4 asserts those postings amount-for-amount instead
+//! of the old no-GL guard.
 
 use erpcraft_core::rusqlite::Connection;
 use erpcraft_core::{
     accept_quote, create_invoice_from_order, create_order_from_quote, create_quote, customer_count,
     decline_quote, entry_count, get_invoice, get_order, get_quote, issue_invoice, item_count,
-    list_customers, list_items, list_payments_for_invoice, open_db, record_payment, send_quote,
-    trial_balance, NewQuote, NewQuoteLine, BRACKET_SKU, BRACKET_UNIT_PRICE_CENTS,
+    list_customers, list_entries, list_items, list_payments_for_invoice, open_db, record_payment,
+    send_quote, trial_balance, NewQuote, NewQuoteLine, BRACKET_SKU, BRACKET_UNIT_PRICE_CENTS,
     OPENING_TOTAL_CENTS, STANDARD_COST_CENTS,
 };
 
@@ -218,36 +220,119 @@ fn illegal_transitions_are_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. NO-GL GUARD: the whole flow posts nothing to the ledger.
+// 4. DAY-3 POSTING MAP: quotes and orders post NOTHING; issuance posts
+//    exactly the revenue + COGS entries; each payment posts exactly one
+//    cash entry. (This test replaces the Day-2 no-GL guard, inverted for
+//    issuance and payments only.)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn order_to_cash_flow_posts_nothing_to_the_gl() {
+fn flow_posts_exactly_the_day3_mapped_entries() {
     let mut conn = open_db(":memory:").unwrap();
-    let entries_before = entry_count(&conn).unwrap();
+    assert_eq!(entry_count(&conn).unwrap(), 1, "only the opening entry");
     let tb_before = trial_balance(&conn).unwrap();
     assert_eq!(tb_before.total_debit_cents, OPENING_TOTAL_CENTS);
 
-    // Run the entire flow, including a partial-then-full payment.
-    let (_, _, invoice_id) = issued_invoice(&mut conn, "Epsilon", 40);
-    record_payment(&mut conn, invoice_id, 200_000).unwrap();
+    // Quote → order → draft invoice: no GL movement at all.
+    let new_quote = quote_for(&conn, "Epsilon", 40);
+    let quote_id = create_quote(&mut conn, &new_quote).unwrap();
+    send_quote(&mut conn, quote_id).unwrap();
+    accept_quote(&mut conn, quote_id).unwrap();
+    let order_id = create_order_from_quote(&mut conn, quote_id).unwrap();
+    let invoice_id = create_invoice_from_order(&mut conn, order_id).unwrap();
+    assert_eq!(entry_count(&conn).unwrap(), 1, "quotes/orders post nothing");
+    assert_eq!(
+        trial_balance(&conn).unwrap().total_debit_cents,
+        OPENING_TOTAL_CENTS
+    );
+
+    // Issuance posts exactly two entries: revenue $5,000.00 and
+    // COGS 40 × $68.00 = $2,720.00, both sourced to the invoice.
+    issue_invoice(&mut conn, invoice_id).unwrap();
+    assert_eq!(entry_count(&conn).unwrap(), 3);
+    let invoice = get_invoice(&conn, invoice_id).unwrap().unwrap();
+    let entries = list_entries(&conn).unwrap();
+    let revenue = entries
+        .iter()
+        .find(|e| Some(e.id) == invoice.gl_entry_id)
+        .expect("revenue entry recorded on the invoice");
+    assert_eq!(revenue.source, format!("invoice:{invoice_id}"));
+    assert_eq!(revenue.lines.len(), 2);
+    assert_eq!(revenue.lines[0].account_code, "1100");
+    assert_eq!(revenue.lines[0].debit_cents, 500_000);
+    assert_eq!(revenue.lines[1].account_code, "4000");
+    assert_eq!(revenue.lines[1].credit_cents, 500_000);
+    let cogs = entries
+        .iter()
+        .find(|e| Some(e.id) == invoice.cogs_entry_id)
+        .expect("COGS entry recorded on the invoice");
+    assert_eq!(cogs.source, format!("invoice:{invoice_id}"));
+    assert_eq!(cogs.lines[0].account_code, "5000");
+    assert_eq!(cogs.lines[0].debit_cents, 40 * STANDARD_COST_CENTS);
+    assert_eq!(cogs.lines[1].account_code, "1220");
+    assert_eq!(cogs.lines[1].credit_cents, 40 * STANDARD_COST_CENTS);
+
+    // Each payment posts exactly one entry: Dr Cash / Cr AR, its amount.
+    let first = record_payment(&mut conn, invoice_id, 200_000).unwrap();
+    assert_eq!(entry_count(&conn).unwrap(), 4);
+    let payments = list_payments_for_invoice(&conn, invoice_id).unwrap();
+    let first_entry = entries_by_id(&conn, payments[0].gl_entry_id);
+    assert_eq!(first_entry.source, format!("payment:{first}"));
+    assert_eq!(first_entry.lines[0].account_code, "1000");
+    assert_eq!(first_entry.lines[0].debit_cents, 200_000);
+    assert_eq!(first_entry.lines[1].account_code, "1100");
+    assert_eq!(first_entry.lines[1].credit_cents, 200_000);
     record_payment(&mut conn, invoice_id, 300_000).unwrap();
+    assert_eq!(entry_count(&conn).unwrap(), 5);
     assert_eq!(
         get_invoice(&conn, invoice_id).unwrap().unwrap().status,
         "paid"
     );
 
-    // The journal and the trial balance are exactly as seeded.
-    assert_eq!(entry_count(&conn).unwrap(), entries_before);
-    assert_eq!(entries_before, 1, "only the opening entry exists");
-    let tb_after = trial_balance(&conn).unwrap();
-    assert_eq!(tb_after.total_debit_cents, tb_before.total_debit_cents);
-    assert_eq!(tb_after.total_credit_cents, tb_before.total_credit_cents);
-    for (before, after) in tb_before.rows.iter().zip(tb_after.rows.iter()) {
-        assert_eq!(before.code, after.code);
-        assert_eq!(before.debit_cents, after.debit_cents);
-        assert_eq!(before.credit_cents, after.credit_cents);
+    // The trial balance moved by exactly the mapped amounts, per account.
+    let tb = trial_balance(&conn).unwrap();
+    let expected: &[(&str, i64, i64)] = &[
+        ("1000", 5_320_000, 0), // Cash 48,200 + 5,000 paid in
+        ("1100", 1_240_000, 0), // AR 12,400 + 5,000 − 5,000
+        ("1120", 0, 0),
+        ("1200", 860_000, 0),
+        ("1210", 0, 0),
+        ("1220", 658_000, 0), // Finished Goods 9,300 − 2,720 COGS
+        ("1300", 4_200_000, 0),
+        ("1310", 0, 680_000),
+        ("2000", 0, 970_000),
+        ("2100", 0, 0),
+        ("2200", 0, 0),
+        ("2300", 0, 2_500_000),
+        ("2400", 0, 0),
+        ("3000", 0, 6_500_000),
+        ("3100", 0, 1_400_000),
+        ("4000", 0, 500_000), // Revenue
+        ("4010", 0, 0),
+        ("5000", 272_000, 0), // COGS
+        ("6000", 0, 0),
+        ("6010", 0, 0),
+        ("6020", 0, 0),
+        ("6030", 0, 0),
+    ];
+    assert_eq!(tb.rows.len(), expected.len());
+    for (row, (code, debit, credit)) in tb.rows.iter().zip(expected.iter()) {
+        assert_eq!(row.code, *code);
+        assert_eq!(row.debit_cents, *debit, "account {code} debit");
+        assert_eq!(row.credit_cents, *credit, "account {code} credit");
     }
+    assert_eq!(tb.total_debit_cents, 12_550_000);
+    assert_eq!(tb.total_credit_cents, 12_550_000);
+}
+
+/// Fetch one entry by the id recorded on a document header.
+fn entries_by_id(conn: &Connection, entry_id: Option<i64>) -> erpcraft_core::JournalEntryView {
+    let id = entry_id.expect("a GL entry id is recorded");
+    list_entries(conn)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.id == id)
+        .expect("the recorded entry exists")
 }
 
 // ---------------------------------------------------------------------------

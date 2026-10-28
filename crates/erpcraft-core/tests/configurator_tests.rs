@@ -350,12 +350,14 @@ fn quote_snapshot_survives_dependency_edits() {
 
 // ---------------------------------------------------------------------------
 // 6. No-GL guard, configurator edition: evaluating a configuration
-//    creates zero journal entries and zero documents.
+//    creates zero journal entries and zero documents — and under Day 3
+//    that still holds exactly: evaluation and quote creation post
+//    nothing (only issuance and payments post, per the posting map).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn evaluation_creates_no_journal_entries_and_no_documents() {
-    let conn = open_db(":memory:").unwrap();
+    let mut conn = open_db(":memory:").unwrap();
     let entries_before = entry_count(&conn).unwrap();
     let tb_before = trial_balance(&conn).unwrap();
     assert_eq!(tb_before.total_debit_cents, OPENING_TOTAL_CENTS);
@@ -398,6 +400,22 @@ fn evaluation_creates_no_journal_entries_and_no_documents() {
     let tb_after = trial_balance(&conn).unwrap();
     assert_eq!(tb_after.total_debit_cents, tb_before.total_debit_cents);
     assert_eq!(tb_after.total_credit_cents, tb_before.total_credit_cents);
+
+    // Day-3 sharpening: even *using* an evaluation — creating a quote
+    // with a configured line — posts nothing. Only issuance and payment
+    // transitions post, and this test never reaches them.
+    let new_quote = configured_quote(
+        &mut conn,
+        50,
+        config(&[("material", code("steel")), ("finish", code("galvanized"))]),
+    );
+    create_quote(&mut conn, &new_quote).unwrap();
+    assert_eq!(entry_count(&conn).unwrap(), entries_before);
+    assert_eq!(invoice_count(&conn).unwrap(), docs_before.2);
+    assert_eq!(payment_count(&conn).unwrap(), docs_before.3);
+    let tb_final = trial_balance(&conn).unwrap();
+    assert_eq!(tb_final.total_debit_cents, tb_before.total_debit_cents);
+    assert_eq!(tb_final.total_credit_cents, tb_before.total_credit_cents);
 }
 
 // ---------------------------------------------------------------------------
