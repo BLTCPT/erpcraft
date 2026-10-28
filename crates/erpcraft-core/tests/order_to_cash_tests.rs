@@ -39,6 +39,7 @@ fn quote_for(conn: &Connection, customer: &str, qty: i64) -> NewQuote {
         lines: vec![NewQuoteLine {
             item_id: bracket_id(conn),
             qty,
+            configuration: None,
         }],
     }
 }

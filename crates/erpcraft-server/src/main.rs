@@ -14,15 +14,18 @@ use axum::{
 };
 use erpcraft_core::rusqlite::Connection;
 use erpcraft_core::{
-    accept_quote, account_count, cancel_order, create_invoice_from_order, create_order_from_quote,
-    create_quote, customer_count, decline_quote, entry_count, expire_quote, fulfil_order,
-    get_entry, get_invoice, get_order, get_quote, invoice_count, issue_invoice, list_accounts,
-    list_customers, list_entries, list_invoices, list_items, list_orders, list_payments,
-    list_payments_for_invoice, list_quotes, open_db, order_count, payment_count, post_entry,
-    quote_count, record_payment, send_quote, trial_balance, void_invoice, LedgerError, NewEntry,
-    NewQuote, DEMO_COMPANY,
+    accept_quote, account_count, add_characteristic, cancel_order, config_model_count,
+    create_component, create_config_model, create_dependency, create_invoice_from_order,
+    create_order_from_quote, create_quote, customer_count, decline_quote, entry_count, evaluate,
+    expire_quote, fulfil_order, get_config_model, get_entry, get_invoice, get_order, get_quote,
+    invoice_count, issue_invoice, list_accounts, list_config_models, list_customers, list_entries,
+    list_invoices, list_items, list_orders, list_payments, list_payments_for_invoice, list_quotes,
+    open_db, order_count, payment_count, post_entry, quote_count, record_payment, send_quote,
+    trial_balance, void_invoice, ConfigValue, Explanation, LedgerError, NewCharacteristic,
+    NewComponent, NewConfigModel, NewDependency, NewEntry, NewQuote, DEMO_COMPANY,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 type SharedDb = Arc<Mutex<Connection>>;
@@ -45,11 +48,25 @@ struct Health {
     orders: i64,
     invoices: i64,
     payments: i64,
+    config_models: i64,
 }
 
 #[derive(Serialize)]
 struct ErrorBody {
     error: String,
+    /// Structured configurator explanations, when the refusal came
+    /// from the evaluator. Omitted for plain errors.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    explanations: Vec<Explanation>,
+}
+
+impl ErrorBody {
+    fn plain(error: String) -> Self {
+        ErrorBody {
+            error,
+            explanations: Vec::new(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -67,32 +84,44 @@ struct RecordPayment {
     amount_cents: i64,
 }
 
+#[derive(Deserialize)]
+struct EvaluateRequest {
+    configuration: BTreeMap<String, ConfigValue>,
+}
+
 /// A refused state transition / validation failure is the client's error:
-/// 400 with the core's plain-language message.
+/// 400 with the core's plain-language message. Configurator refusals
+/// also carry the evaluator's structured explanations.
 fn bad_request(e: LedgerError) -> (StatusCode, Json<ErrorBody>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorBody {
-            error: e.to_string(),
-        }),
-    )
+    match e {
+        LedgerError::Configuration {
+            message,
+            explanations,
+        } => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: message,
+                explanations,
+            }),
+        ),
+        other => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody::plain(other.to_string())),
+        ),
+    }
 }
 
 fn not_found(what: &str, id: i64) -> (StatusCode, Json<ErrorBody>) {
     (
         StatusCode::NOT_FOUND,
-        Json(ErrorBody {
-            error: format!("no {what} with id {id}"),
-        }),
+        Json(ErrorBody::plain(format!("no {what} with id {id}"))),
     )
 }
 
 fn server_error(e: LedgerError) -> (StatusCode, Json<ErrorBody>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorBody {
-            error: e.to_string(),
-        }),
+        Json(ErrorBody::plain(e.to_string())),
     )
 }
 
@@ -100,7 +129,7 @@ async fn root() -> Json<RootInfo> {
     Json(RootInfo {
         name: "ERPCraft",
         vision: "A free, open-source, clean-room ERP in Rust — AI-native from day one.",
-        status: "day-2 alpha: ledger core + order-to-cash documents (quotes, orders, invoices, payments — no GL postings yet)",
+        status: "alpha: ledger core + order-to-cash documents + variant configurator (typed dependencies, deterministic evaluation, roll-up pricing — no GL postings yet)",
         demo_company: DEMO_COMPANY,
     })
 }
@@ -116,6 +145,7 @@ async fn health(State(db): State<SharedDb>) -> Json<Health> {
         orders: order_count(&conn).unwrap_or(-1),
         invoices: invoice_count(&conn).unwrap_or(-1),
         payments: payment_count(&conn).unwrap_or(-1),
+        config_models: config_model_count(&conn).unwrap_or(-1),
     })
 }
 
@@ -154,9 +184,9 @@ async fn post_entry_handler(
             )),
             _ => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorBody {
-                    error: "posted but could not be read back".to_string(),
-                }),
+                Json(ErrorBody::plain(
+                    "posted but could not be read back".to_string(),
+                )),
             )),
         },
         // Invariant violations are the client's error: the database refused.
@@ -394,6 +424,125 @@ async fn list_invoice_payments_handler(
     Ok(Json(serde_json::json!({ "payments": payments })))
 }
 
+// ---------------------------------------------------------------------------
+// Variant configurator
+// ---------------------------------------------------------------------------
+
+async fn list_config_models_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let conn = db.lock().expect("db lock");
+    let models = list_config_models(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "config_models": models })))
+}
+
+async fn create_config_model_handler(
+    State(db): State<SharedDb>,
+    Json(new): Json<NewConfigModel>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_config_model(&conn, &new).map_err(bad_request)?;
+    let model = get_config_model(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("config model", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(model).expect("serializable")),
+    ))
+}
+
+async fn get_config_model_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let model = get_config_model(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("config model", id))?;
+    Ok(Json(serde_json::to_value(model).expect("serializable")))
+}
+
+async fn add_characteristic_handler(
+    State(db): State<SharedDb>,
+    Path(model_id): Path<i64>,
+    Json(new): Json<NewCharacteristic>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = add_characteristic(&conn, model_id, &new).map_err(bad_request)?;
+    let model = get_config_model(&conn, model_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("config model", model_id))?;
+    let characteristic = model
+        .characteristics
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| not_found("characteristic", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(characteristic).expect("serializable")),
+    ))
+}
+
+async fn create_component_handler(
+    State(db): State<SharedDb>,
+    Path(model_id): Path<i64>,
+    Json(new): Json<NewComponent>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_component(&conn, model_id, &new).map_err(bad_request)?;
+    let model = get_config_model(&conn, model_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("config model", model_id))?;
+    let component = model
+        .components
+        .into_iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| not_found("component", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(component).expect("serializable")),
+    ))
+}
+
+async fn create_dependency_handler(
+    State(db): State<SharedDb>,
+    Path(model_id): Path<i64>,
+    Json(new): Json<NewDependency>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_dependency(&conn, model_id, &new).map_err(bad_request)?;
+    let model = get_config_model(&conn, model_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("config model", model_id))?;
+    let dependency = model
+        .dependencies
+        .into_iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| not_found("dependency", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(dependency).expect("serializable")),
+    ))
+}
+
+/// Evaluation is a pure read: even an inconsistent configuration is a
+/// successful evaluation — the verdict and its structured explanations
+/// are the response body.
+async fn evaluate_handler(
+    State(db): State<SharedDb>,
+    Path(model_id): Path<i64>,
+    Json(body): Json<EvaluateRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let model = get_config_model(&conn, model_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("config model", model_id))?;
+    let evaluation = evaluate(&model, &body.configuration);
+    Ok(Json(
+        serde_json::to_value(evaluation).expect("serializable"),
+    ))
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("ERPCRAFT_DB").unwrap_or_else(|_| "erpcraft.db".to_string());
@@ -437,6 +586,22 @@ async fn main() {
         )
         .route("/invoices/{id}/payments", post(record_payment_handler))
         .route("/payments", get(list_payments_handler))
+        .route("/config-models", get(list_config_models_handler))
+        .route("/config-models", post(create_config_model_handler))
+        .route("/config-models/{id}", get(get_config_model_handler))
+        .route(
+            "/config-models/{id}/characteristics",
+            post(add_characteristic_handler),
+        )
+        .route(
+            "/config-models/{id}/components",
+            post(create_component_handler),
+        )
+        .route(
+            "/config-models/{id}/dependencies",
+            post(create_dependency_handler),
+        )
+        .route("/config-models/{id}/evaluate", post(evaluate_handler))
         .with_state(db);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

@@ -20,9 +20,22 @@
 
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 pub use rusqlite;
+
+pub mod configurator;
+
+pub use configurator::{
+    add_characteristic, config_model_count, config_model_for_item, create_component,
+    create_config_model, create_dependency, dependency_fingerprint, evaluate,
+    evaluate_configuration, get_config_model, list_config_models, seed_configurator_if_empty,
+    CharacteristicValueView, CharacteristicView, CmpOp, ComponentView, ConfigModelView,
+    ConfigValue, DependencyView, Evaluation, Explanation, Expr, ForcedComponent, ForcedValue,
+    MessageParts, NewCharacteristic, NewCharacteristicValue, NewComponent, NewConfigModel,
+    NewDependency, Verdict,
+};
 
 /// Money is always integer minor units (cents). Never f64.
 pub type Cents = i64;
@@ -45,6 +58,13 @@ pub enum LedgerError {
     Db(rusqlite::Error),
     UnknownAccount(String),
     Invalid(String),
+    /// A variant-configuration rejection: carries the evaluator's
+    /// structured explanations so every surface can render the reasons,
+    /// not just a message.
+    Configuration {
+        message: String,
+        explanations: Vec<configurator::Explanation>,
+    },
 }
 
 impl fmt::Display for LedgerError {
@@ -53,6 +73,7 @@ impl fmt::Display for LedgerError {
             LedgerError::Db(e) => write!(f, "database error: {e}"),
             LedgerError::UnknownAccount(code) => write!(f, "unknown account code: {code}"),
             LedgerError::Invalid(msg) => write!(f, "invalid journal entry: {msg}"),
+            LedgerError::Configuration { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -254,11 +275,13 @@ CREATE TABLE IF NOT EXISTS quotes (
 );
 
 CREATE TABLE IF NOT EXISTS quote_lines (
-    id               INTEGER PRIMARY KEY,
-    quote_id         INTEGER NOT NULL REFERENCES quotes(id),
-    item_id          INTEGER NOT NULL REFERENCES items(id),
-    qty              INTEGER NOT NULL CHECK (qty > 0),
-    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+    id                  INTEGER PRIMARY KEY,
+    quote_id            INTEGER NOT NULL REFERENCES quotes(id),
+    item_id             INTEGER NOT NULL REFERENCES items(id),
+    qty                 INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents    INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+    standard_cost_cents INTEGER,
+    configuration       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sales_orders (
@@ -271,11 +294,13 @@ CREATE TABLE IF NOT EXISTS sales_orders (
 );
 
 CREATE TABLE IF NOT EXISTS order_lines (
-    id               INTEGER PRIMARY KEY,
-    order_id         INTEGER NOT NULL REFERENCES sales_orders(id),
-    item_id          INTEGER NOT NULL REFERENCES items(id),
-    qty              INTEGER NOT NULL CHECK (qty > 0),
-    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+    id                  INTEGER PRIMARY KEY,
+    order_id            INTEGER NOT NULL REFERENCES sales_orders(id),
+    item_id             INTEGER NOT NULL REFERENCES items(id),
+    qty                 INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents    INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+    standard_cost_cents INTEGER,
+    configuration       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS invoices (
@@ -288,11 +313,13 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 
 CREATE TABLE IF NOT EXISTS invoice_lines (
-    id               INTEGER PRIMARY KEY,
-    invoice_id       INTEGER NOT NULL REFERENCES invoices(id),
-    item_id          INTEGER NOT NULL REFERENCES items(id),
-    qty              INTEGER NOT NULL CHECK (qty > 0),
-    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+    id                  INTEGER PRIMARY KEY,
+    invoice_id          INTEGER NOT NULL REFERENCES invoices(id),
+    item_id             INTEGER NOT NULL REFERENCES items(id),
+    qty                 INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents    INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+    standard_cost_cents INTEGER,
+    configuration       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS payments (
@@ -301,6 +328,65 @@ CREATE TABLE IF NOT EXISTS payments (
     amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
     status       TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded')),
     created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ---------------------------------------------------------------------------
+-- Variant configurator (CONFIGURATOR_DESIGN.md). Dependencies are typed
+-- expression trees stored as JSON — never source text. The evaluator in
+-- the `configurator` module is pure; these tables are its only state.
+-- A quote line's `configuration` column snapshots the evaluated
+-- configuration plus its rolled-up pricing, so later dependency edits
+-- never rewrite a quoted line.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS config_models (
+    id         INTEGER PRIMARY KEY,
+    item_id    INTEGER NOT NULL UNIQUE REFERENCES items(id),
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS characteristics (
+    id         INTEGER PRIMARY KEY,
+    model_id   INTEGER NOT NULL REFERENCES config_models(id),
+    code       TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    value_type TEXT NOT NULL CHECK (value_type IN ('enum','integer','bool')),
+    min_value  INTEGER,
+    max_value  INTEGER,
+    required   INTEGER NOT NULL DEFAULT 1 CHECK (required IN (0,1)),
+    UNIQUE (model_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS characteristic_values (
+    id                INTEGER PRIMARY KEY,
+    characteristic_id INTEGER NOT NULL REFERENCES characteristics(id),
+    code              TEXT NOT NULL,
+    label             TEXT NOT NULL,
+    UNIQUE (characteristic_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS dependencies (
+    id          INTEGER PRIMARY KEY,
+    model_id    INTEGER NOT NULL REFERENCES config_models(id),
+    kind        TEXT NOT NULL CHECK (kind IN ('precondition','selection','constraint')),
+    target      TEXT NOT NULL,
+    expr        TEXT NOT NULL,
+    source_text TEXT NOT NULL DEFAULT '',
+    created_by  TEXT NOT NULL DEFAULT 'api',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS components (
+    id                INTEGER PRIMARY KEY,
+    model_id          INTEGER NOT NULL REFERENCES config_models(id),
+    code              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    component_item_id INTEGER REFERENCES items(id),
+    qty               INTEGER NOT NULL DEFAULT 1 CHECK (qty > 0),
+    price_delta_cents INTEGER NOT NULL DEFAULT 0,
+    cost_delta_cents  INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (model_id, code)
 );
 "#;
 
@@ -365,12 +451,37 @@ pub fn open_db(path: &str) -> Result<Connection> {
     init_schema(&conn)?;
     seed_if_empty(&mut conn)?;
     seed_master_data_if_empty(&conn)?;
+    seed_configurator_if_empty(&conn)?;
     Ok(conn)
 }
 
 /// Create tables + invariant triggers if they do not exist yet.
 pub fn init_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA)?;
+    // Column migrations for databases created before the configurator:
+    // CREATE TABLE IF NOT EXISTS cannot add columns to an existing
+    // table, so the line tables gain their snapshot columns here.
+    for table in ["quote_lines", "order_lines", "invoice_lines"] {
+        ensure_column(conn, table, "standard_cost_cents", "INTEGER")?;
+        ensure_column(conn, table, "configuration", "TEXT")?;
+    }
+    Ok(())
+}
+
+/// Add a column to a table if it is not there yet. Table and column
+/// names are internal constants, never caller input.
+fn ensure_column(conn: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for c in cols {
+        if c? == column {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"),
+        [],
+    )?;
     Ok(())
 }
 
@@ -665,6 +776,11 @@ pub struct ItemView {
 
 /// One document line. `line_total_cents` is always derived
 /// (qty × unit_price_cents), never stored and never client-supplied.
+/// `standard_cost_cents` is the per-unit cost snapshotted at quote time
+/// (for configured lines it already includes the selected components'
+/// cost deltas), and `configuration` is the variant-configuration
+/// snapshot for configured lines — both copied unchanged from quote to
+/// order to invoice.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocLineView {
     pub item_id: i64,
@@ -672,6 +788,8 @@ pub struct DocLineView {
     pub qty: i64,
     pub unit_price_cents: Cents,
     pub line_total_cents: Cents,
+    pub standard_cost_cents: Option<Cents>,
+    pub configuration: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -726,11 +844,15 @@ pub struct PaymentView {
 
 /// One line of a new quote: which item and how many. The unit price is
 /// snapshotted from the item master when the quote is created — it is
-/// never supplied by the caller.
+/// never supplied by the caller. A line may carry a variant
+/// `configuration` (characteristic code → value); configured lines are
+/// evaluated and priced by the configurator — see [`price_quote_line`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewQuoteLine {
     pub item_id: i64,
     pub qty: i64,
+    #[serde(default)]
+    pub configuration: Option<BTreeMap<String, ConfigValue>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -804,7 +926,7 @@ fn doc_lines(
     doc_id: i64,
 ) -> Result<Vec<DocLineView>> {
     let sql = format!(
-        "SELECT l.item_id, i.sku, l.qty, l.unit_price_cents
+        "SELECT l.item_id, i.sku, l.qty, l.unit_price_cents, l.standard_cost_cents, l.configuration
          FROM {lines_table} l
          JOIN items i ON i.id = l.item_id
          WHERE l.{fk_column} = ?1
@@ -814,17 +936,29 @@ fn doc_lines(
     let rows = stmt.query_map(params![doc_id], |row| {
         let qty: i64 = row.get(2)?;
         let unit_price_cents: Cents = row.get(3)?;
-        Ok(DocLineView {
-            item_id: row.get(0)?,
-            sku: row.get(1)?,
-            qty,
-            unit_price_cents,
-            line_total_cents: qty * unit_price_cents,
-        })
+        let configuration_json: Option<String> = row.get(5)?;
+        Ok((
+            DocLineView {
+                item_id: row.get(0)?,
+                sku: row.get(1)?,
+                qty,
+                unit_price_cents,
+                line_total_cents: qty * unit_price_cents,
+                standard_cost_cents: row.get(4)?,
+                configuration: None, // parsed below, outside the row closure
+            },
+            configuration_json,
+        ))
     })?;
     let mut out = Vec::new();
     for r in rows {
-        out.push(r?);
+        let (mut line, configuration_json) = r?;
+        if let Some(json) = configuration_json {
+            line.configuration = Some(serde_json::from_str(&json).map_err(|_| {
+                LedgerError::Invalid("a stored line configuration is unreadable".to_string())
+            })?);
+        }
+        out.push(line);
     }
     Ok(out)
 }
@@ -965,8 +1099,138 @@ fn transition(conn: &Connection, table: &str, what: &str, id: i64, step: Transit
 // Day 2: order-to-cash — quotes
 // ---------------------------------------------------------------------------
 
+/// Price one new quote line: returns (unit_price_cents,
+/// standard_cost_cents, configuration snapshot JSON).
+///
+/// Unconfigured lines price exactly as Day 2 priced them — the item
+/// master's price and standard cost, snapshotted. Configured lines go
+/// through the configurator (CONFIGURATOR_DESIGN.md, "Pricing"): the
+/// configuration is evaluated, and the item's base price/cost are
+/// rolled up with the price/cost deltas of the components the
+/// evaluation selected. The evaluator itself never touches prices —
+/// this step consumes its selected/forced output. An inconsistent
+/// configuration is refused here with the evaluator's explanations; an
+/// incomplete one is allowed while the quote is a draft (acceptance
+/// demands consistency — see [`accept_quote`]). A computed price or
+/// cost below zero is a constraint violation, never silently clamped.
+fn price_quote_line(
+    conn: &Connection,
+    line: &NewQuoteLine,
+) -> Result<(Cents, Cents, Option<String>)> {
+    let (base_price, base_cost) = conn
+        .query_row(
+            "SELECT unit_price_cents, standard_cost_cents FROM items WHERE id = ?1",
+            params![line.item_id],
+            |r| Ok((r.get::<_, Cents>(0)?, r.get::<_, Cents>(1)?)),
+        )
+        .map_err(|_| LedgerError::Invalid(format!("unknown item id {}", line.item_id)))?;
+    let Some(config) = &line.configuration else {
+        return Ok((base_price, base_cost, None));
+    };
+
+    let model = config_model_for_item(conn, line.item_id)?.ok_or_else(|| {
+        LedgerError::Invalid(format!(
+            "item {} has no variant configuration model",
+            line.item_id
+        ))
+    })?;
+
+    // The line quantity *is* the quantity characteristic when the model
+    // defines one; a caller-supplied quantity must agree with it.
+    let mut eval_input = config.clone();
+    if model.characteristic("quantity").is_some() {
+        if let Some(given) = eval_input.get("quantity") {
+            if *given != ConfigValue::Int(line.qty) {
+                return Err(LedgerError::Invalid(format!(
+                    "configuration quantity {} does not match the line quantity {}",
+                    given.render(),
+                    line.qty
+                )));
+            }
+        }
+        eval_input.insert("quantity".to_string(), ConfigValue::Int(line.qty));
+    }
+
+    let evaluation = evaluate(&model, &eval_input);
+    if let Verdict::Inconsistent = evaluation.verdict {
+        return Err(LedgerError::Configuration {
+            message: format!(
+                "the configuration for item {} is inconsistent: {}",
+                line.item_id,
+                evaluation
+                    .explanations
+                    .first()
+                    .map(|e| e.message_parts.detail.clone())
+                    .unwrap_or_else(|| "no explanation recorded".to_string())
+            ),
+            explanations: evaluation.explanations.clone(),
+        });
+    }
+
+    // Roll up: base + Σ deltas of the selected components.
+    let mut unit_price_cents = base_price;
+    let mut standard_cost_cents = base_cost;
+    for component in &model.components {
+        if evaluation
+            .selected_components
+            .iter()
+            .any(|c| c == &component.code)
+        {
+            unit_price_cents += component.price_delta_cents * component.qty;
+            standard_cost_cents += component.cost_delta_cents * component.qty;
+        }
+    }
+    if unit_price_cents < 0 || standard_cost_cents < 0 {
+        let detail = format!(
+            "the configuration prices the line at {unit_price_cents} cents with a standard cost of {standard_cost_cents} cents — a configured line may not price below zero"
+        );
+        return Err(LedgerError::Configuration {
+            message: detail.clone(),
+            explanations: vec![Explanation {
+                dependency_id: None,
+                kind: "constraint".to_string(),
+                message_parts: MessageParts {
+                    characteristics: Vec::new(),
+                    values: Vec::new(),
+                    detail,
+                },
+            }],
+        });
+    }
+
+    // Snapshot: the effective values (chosen + forced), what was
+    // selected, the verdict, the dependency fingerprint it was
+    // evaluated against, and the rolled-up pricing. Frozen here —
+    // later dependency edits never rewrite it.
+    let mut values = eval_input;
+    for (code, forced) in &evaluation.forced {
+        values.insert(code.clone(), forced.value.clone());
+    }
+    let verdict = match &evaluation.verdict {
+        Verdict::Consistent => "consistent",
+        Verdict::Incomplete { .. } => "incomplete",
+        Verdict::Inconsistent => "inconsistent",
+    };
+    let snapshot = serde_json::json!({
+        "model_id": model.id,
+        "dependency_fingerprint": dependency_fingerprint(&model),
+        "values": values,
+        "forced": evaluation.forced,
+        "selected_components": evaluation.selected_components,
+        "verdict": verdict,
+        "unit_price_cents": unit_price_cents,
+        "standard_cost_cents": standard_cost_cents,
+    });
+    Ok((
+        unit_price_cents,
+        standard_cost_cents,
+        Some(snapshot.to_string()),
+    ))
+}
+
 /// Create a quote in `draft`. Line prices are snapshotted from the item
-/// master; totals are derived from the lines from then on.
+/// master; totals are derived from the lines from then on. Configured
+/// lines are evaluated and priced by [`price_quote_line`].
 pub fn create_quote(conn: &mut Connection, new: &NewQuote) -> Result<i64> {
     if new.lines.is_empty() {
         return Err(LedgerError::Invalid(
@@ -998,17 +1262,18 @@ pub fn create_quote(conn: &mut Connection, new: &NewQuote) -> Result<i64> {
     )?;
     let quote_id = tx.last_insert_rowid();
     for line in &new.lines {
-        let unit_price_cents: Cents = tx
-            .query_row(
-                "SELECT unit_price_cents FROM items WHERE id = ?1",
-                params![line.item_id],
-                |r| r.get(0),
-            )
-            .map_err(|_| LedgerError::Invalid(format!("unknown item id {}", line.item_id)))?;
+        let (unit_price_cents, standard_cost_cents, configuration) = price_quote_line(&tx, line)?;
         tx.execute(
-            "INSERT INTO quote_lines (quote_id, item_id, qty, unit_price_cents)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![quote_id, line.item_id, line.qty, unit_price_cents],
+            "INSERT INTO quote_lines (quote_id, item_id, qty, unit_price_cents, standard_cost_cents, configuration)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                quote_id,
+                line.item_id,
+                line.qty,
+                unit_price_cents,
+                standard_cost_cents,
+                configuration
+            ],
         )?;
     }
     tx.commit()?;
@@ -1050,6 +1315,55 @@ pub fn send_quote(conn: &mut Connection, quote_id: i64) -> Result<()> {
 }
 
 pub fn accept_quote(conn: &mut Connection, quote_id: i64) -> Result<()> {
+    // Configurator gate: a configured line may ride a quote into
+    // acceptance only when its configuration evaluates Consistent
+    // under the current model. Incomplete is a drafting state, never
+    // an accepted one. The line's snapshotted configuration and prices
+    // are *not* rewritten by this check — it only gates the verdict.
+    let quote = fetch_quote(conn, quote_id)?;
+    if quote.status == "sent" {
+        for line in &quote.lines {
+            let Some(snapshot) = &line.configuration else {
+                continue;
+            };
+            let model = config_model_for_item(conn, line.item_id)?.ok_or_else(|| {
+                LedgerError::Invalid(format!(
+                    "item {} no longer has a variant configuration model",
+                    line.item_id
+                ))
+            })?;
+            let values: BTreeMap<String, ConfigValue> = snapshot
+                .get("values")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .ok_or_else(|| {
+                    LedgerError::Invalid(format!(
+                        "the stored configuration for {} is unreadable",
+                        line.sku
+                    ))
+                })?;
+            let evaluation = evaluate(&model, &values);
+            match evaluation.verdict {
+                Verdict::Consistent => {}
+                Verdict::Incomplete { missing } => {
+                    return Err(LedgerError::Invalid(format!(
+                        "cannot accept quote {quote_id}: the configuration for {} is incomplete — missing {}",
+                        line.sku,
+                        missing.join(", ")
+                    )));
+                }
+                Verdict::Inconsistent => {
+                    return Err(LedgerError::Configuration {
+                        message: format!(
+                            "cannot accept quote {quote_id}: the configuration for {} is inconsistent",
+                            line.sku
+                        ),
+                        explanations: evaluation.explanations,
+                    });
+                }
+            }
+        }
+    }
     transition(
         conn,
         "quotes",
@@ -1132,8 +1446,8 @@ pub fn create_order_from_quote(conn: &mut Connection, quote_id: i64) -> Result<i
     )?;
     let order_id = tx.last_insert_rowid();
     tx.execute(
-        "INSERT INTO order_lines (order_id, item_id, qty, unit_price_cents)
-         SELECT ?1, item_id, qty, unit_price_cents
+        "INSERT INTO order_lines (order_id, item_id, qty, unit_price_cents, standard_cost_cents, configuration)
+         SELECT ?1, item_id, qty, unit_price_cents, standard_cost_cents, configuration
          FROM quote_lines WHERE quote_id = ?2",
         params![order_id, quote_id],
     )?;
@@ -1227,8 +1541,8 @@ pub fn create_invoice_from_order(conn: &mut Connection, order_id: i64) -> Result
     )?;
     let invoice_id = tx.last_insert_rowid();
     tx.execute(
-        "INSERT INTO invoice_lines (invoice_id, item_id, qty, unit_price_cents)
-         SELECT ?1, item_id, qty, unit_price_cents
+        "INSERT INTO invoice_lines (invoice_id, item_id, qty, unit_price_cents, standard_cost_cents, configuration)
+         SELECT ?1, item_id, qty, unit_price_cents, standard_cost_cents, configuration
          FROM order_lines WHERE order_id = ?2",
         params![invoice_id, order_id],
     )?;

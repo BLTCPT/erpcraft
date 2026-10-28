@@ -6,6 +6,12 @@ audit trail + agent. Everything below is deliberately out of scope for the
 
 ## ERP breadth (post-hackathon)
 
+- **Variant configurator** — typed LO-VC-style dependencies
+  (precondition / selection condition / constraint) with a
+  deterministic evaluator in the core and AI only at authoring and
+  explanation. Design: `CONFIGURATOR_DESIGN.md` (written Oct 27);
+  a thin evaluator spike is gated on Day 3 + Day 5 landing on
+  schedule, and is otherwise a post-hackathon epic.
 - Procure-to-pay: suppliers, purchase orders, receiving, AP matching
 - Inventory depth: lots/serials, multi-warehouse, reorder points
 - Manufacturing: BOMs, work orders, MRP, capacity
