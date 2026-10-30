@@ -1,0 +1,15 @@
+[package]
+name = "erpcraft-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "ERPCraft operator CLI + MCP server (stdio) over erpcraft-core — one dispatch table, two doors"
+
+[[bin]]
+name = "erpcraft"
+path = "src/main.rs"
+
+[dependencies]
+erpcraft-core = { path = "../erpcraft-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

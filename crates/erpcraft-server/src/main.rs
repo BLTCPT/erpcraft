@@ -4,9 +4,11 @@
 //! posting/read-back. Day 2 adds the order-to-cash documents (customers,
 //! items, quotes, sales orders, invoices, payments). Day 3 adds the GL
 //! posting engine behind those transitions (in the core) plus the
-//! account ledger view (`GET /accounts/{code}/entries`). Every write goes
-//! through the ledger core; invariant violations come back as 400 with the
-//! core's plain-language message.
+//! account ledger view (`GET /accounts/{code}/entries`). Day 4 closes
+//! the returns gap: `POST /invoices/{id}/returns` records a sales
+//! return (the core function shipped on Day 3 without a route). Every
+//! write goes through the ledger core; invariant violations come back
+//! as 400 with the core's plain-language message.
 
 use axum::{
     extract::{Path, State},
@@ -23,9 +25,9 @@ use erpcraft_core::{
     get_invoice, get_order, get_quote, invoice_count, issue_invoice, list_accounts,
     list_config_models, list_customers, list_entries, list_invoices, list_items, list_orders,
     list_payments, list_payments_for_invoice, list_quotes, open_db, order_count, payment_count,
-    post_entry, quote_count, record_payment, send_quote, trial_balance, void_invoice, ConfigValue,
-    Explanation, LedgerError, NewCharacteristic, NewComponent, NewConfigModel, NewDependency,
-    NewEntry, NewQuote, DEMO_COMPANY,
+    post_entry, quote_count, record_payment, record_sales_return, send_quote, trial_balance,
+    void_invoice, ConfigValue, Explanation, LedgerError, NewCharacteristic, NewComponent,
+    NewConfigModel, NewDependency, NewEntry, NewQuote, ReturnLine, DEMO_COMPANY,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -85,6 +87,11 @@ struct CreateInvoice {
 #[derive(Deserialize)]
 struct RecordPayment {
     amount_cents: i64,
+}
+
+#[derive(Deserialize)]
+struct RecordReturn {
+    lines: Vec<ReturnLine>,
 }
 
 #[derive(Deserialize)]
@@ -423,6 +430,33 @@ async fn record_payment_handler(
     ))
 }
 
+/// Day 4: record a sales return against an issued invoice. The core
+/// posts two reversing entries (revenue + restock), each pointing at
+/// the invoice entry it corrects; both are read back in the response,
+/// the same read-back rule as every other posting on this surface.
+async fn record_return_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+    Json(body): Json<RecordReturn>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let mut conn = db.lock().expect("db lock");
+    let (revenue_entry_id, cogs_entry_id) =
+        record_sales_return(&mut conn, id, &body.lines).map_err(bad_request)?;
+    let revenue_entry = get_entry(&conn, revenue_entry_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("journal entry", revenue_entry_id))?;
+    let cogs_entry = get_entry(&conn, cogs_entry_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("journal entry", cogs_entry_id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "revenue_entry": revenue_entry,
+            "cogs_entry": cogs_entry,
+        })),
+    ))
+}
+
 async fn list_payments_handler(
     State(db): State<SharedDb>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -606,6 +640,7 @@ async fn main() {
             get(list_invoice_payments_handler),
         )
         .route("/invoices/{id}/payments", post(record_payment_handler))
+        .route("/invoices/{id}/returns", post(record_return_handler))
         .route("/payments", get(list_payments_handler))
         .route("/config-models", get(list_config_models_handler))
         .route("/config-models", post(create_config_model_handler))

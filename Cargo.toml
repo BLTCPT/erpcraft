@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/erpcraft-core", "crates/erpcraft-server"]
+members = ["crates/erpcraft-core", "crates/erpcraft-server", "crates/erpcraft-cli"]
 
 [workspace.package]
 edition = "2021"

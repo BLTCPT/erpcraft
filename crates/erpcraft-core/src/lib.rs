@@ -175,7 +175,10 @@ pub struct NewLine {
 pub struct NewEntry {
     pub entry_date: String,
     pub memo: String,
-    /// "manual" | "agent" | "opening" | "correction" — who/what originated it.
+    /// "manual" | "agent" | "opening" | "correction" — who/what originated
+    /// it. The Day-4 doors add two tags of their own, set at the door and
+    /// never in core: "cli" (the `erpcraft` operator CLI) and "mcp" (the
+    /// `erpcraft mcp` server). Day 5's agent stays on "agent".
     #[serde(default = "default_source")]
     pub source: String,
     #[serde(default)]
