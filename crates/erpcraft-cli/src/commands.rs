@@ -21,17 +21,24 @@
 
 use erpcraft_core::rusqlite::{ffi::ErrorCode, Connection, Error as SqliteError};
 use erpcraft_core::{
-    accept_quote, account_count, account_ledger, add_bom_line, audit_entry, audit_trail,
-    cancel_order, complete_production_order, config_model_count, create_invoice_from_order,
-    create_order_from_quote, create_quote, customer_count, decline_quote, entry_count,
-    evaluate_configuration, expire_quote, fulfil_order, get_config_model, get_entry, get_invoice,
-    get_order, get_quote, invoice_count, issue_invoice, list_bom, list_config_models,
-    list_customers, list_entries, list_invoices, list_items, list_orders, list_payments,
-    list_payments_for_invoice, list_production_orders, list_purchase_orders, list_quotes,
-    list_stock, open_db, order_count, payment_count, post_entry, quote_count,
-    receive_purchase_order, record_payment, record_sales_return, release_planned_order, run_mrp,
-    send_quote, set_stock, trial_balance, AuditFilter, ConfigValue, Evaluation, Explanation,
-    LedgerError, MrpDemand, NewEntry, NewQuote, ReturnLine,
+    accept_quote, account_count, account_ledger, add_bom_line, approve_requisition, audit_entry,
+    audit_trail, cancel_order, cancel_purchase_order, cancel_requisition, close_fiscal_period,
+    complete_production_order, config_model_count, create_fiscal_period, create_invoice_from_order,
+    create_order_from_quote, create_purchase_order, create_quote, create_requisition,
+    create_supplier, create_user, customer_count, decline_quote, entry_count,
+    evaluate_configuration, expire_quote, fulfil_order, get_ap_invoice, get_config_model,
+    get_entry, get_invoice, get_order, get_procurement_order, get_quote, get_requisition,
+    invoice_count, issue_invoice, list_ap_invoices, list_ap_payments, list_ap_payments_for_invoice,
+    list_bom, list_config_models, list_control_settings, list_customers, list_entries,
+    list_fiscal_periods, list_goods_receipts, list_invoices, list_items, list_orders,
+    list_payments, list_payments_for_invoice, list_procurement_orders, list_production_orders,
+    list_purchase_orders, list_quotes, list_requisitions, list_stock, list_suppliers, list_users,
+    open_db, order_count, override_ap_match, pay_ap_invoice_attributed, payment_count, post_entry,
+    quote_count, receive_goods, receive_purchase_order, record_ap_invoice,
+    record_payment_attributed, record_sales_return, reject_requisition, release_planned_order,
+    run_mrp, send_quote, set_approval_threshold, set_stock, trial_balance, ApLineInput,
+    AuditFilter, ConfigValue, Evaluation, Explanation, LedgerError, MrpDemand, NewApInvoice,
+    NewEntry, NewProcurementOrder, NewQuote, NewRequisition, ReceiveLineInput, ReturnLine,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -582,13 +589,15 @@ pub fn specs() -> Vec<CommandSpec> {
         },
         CommandSpec {
             name: "record_payment",
-            summary: "Record a payment against an issued invoice; posts Dr Cash / Cr AR and advances the invoice toward paid. Overpayment is refused. Returns the payment and its posted entry.",
+            summary: "Record a payment against an issued invoice; posts Dr Cash / Cr AR and advances the invoice toward paid. Overpayment is refused. Returns the payment and its posted entry. Above the configured approval threshold, actor and a different approver are required (controls).",
             usage: "erpcraft record_payment --invoice-id <id> --amount-cents <cents>",
             primary_arg: None,
             input_schema: schema(
                 json!({
                     "invoice_id": id_prop("Invoice id"),
-                    "amount_cents": { "type": "integer", "description": "Payment amount in cents (positive)" }
+                    "amount_cents": { "type": "integer", "description": "Payment amount in cents (positive)" },
+                    "actor": { "type": "string", "description": "Who is recording the payment (required above the approval threshold)" },
+                    "approver": { "type": "string", "description": "Second approver, a different person with role approver/admin (required above the approval threshold); recorded on the payment and its entry" }
                 }),
                 &["invoice_id", "amount_cents"],
             ),
@@ -845,14 +854,350 @@ fn configurator_specs() -> Vec<CommandSpec> {
     ]
 }
 
+/// Procure-to-pay commands (ENTERPRISE_GAPS.md §3): the supplier
+/// chain mirroring order-to-cash — suppliers, requisitions,
+/// procurement orders, goods receipts, AP invoices with three-way
+/// match, AP payments. (Distinct from MRP's planning purchase
+/// orders: `list_purchase_orders` is the plan; these are the
+/// commercial documents.)
+fn procurement_specs() -> Vec<CommandSpec> {
+    let line_items = |desc: &str, price_desc: &str| {
+        json!({
+            "type": "array",
+            "description": desc,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "item_id": { "type": "integer" },
+                    "qty": { "type": "integer" },
+                    "unit_price_cents": { "type": "integer", "description": price_desc }
+                },
+                "required": ["item_id", "qty", "unit_price_cents"]
+            }
+        })
+    };
+    vec![
+        CommandSpec {
+            name: "list_suppliers",
+            summary: "All suppliers.",
+            usage: "erpcraft list_suppliers",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "create_supplier",
+            summary: "Create a supplier by name (names are unique).",
+            usage: "erpcraft create_supplier --name 'SteelWorks Supply'",
+            primary_arg: None,
+            input_schema: schema(json!({ "name": { "type": "string" } }), &["name"]),
+        },
+        CommandSpec {
+            name: "create_requisition",
+            summary: "Create a draft purchase requisition: optional supplier, requester, and lines at estimated prices. Approved requisitions convert to purchase orders.",
+            usage: "erpcraft create_requisition --json '{\"supplier_id\":1,\"requested_by\":\"ops\",\"lines\":[{\"item_id\":2,\"qty\":100,\"unit_price_cents\":1800}]}'",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "supplier_id": id_prop("Supplier id (optional)"),
+                    "requested_by": { "type": "string", "description": "Who is asking (recorded on the requisition)" },
+                    "lines": line_items("Requisition lines: item_id, qty, estimated unit price", "Estimated unit price in cents")
+                }),
+                &["lines"],
+            ),
+        },
+        CommandSpec {
+            name: "list_requisitions",
+            summary: "All purchase requisitions with their lines and totals.",
+            usage: "erpcraft list_requisitions",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "get_requisition",
+            summary: "One purchase requisition by id, with lines and total.",
+            usage: "erpcraft get_requisition <requisition_id>",
+            primary_arg: Some("requisition_id"),
+            input_schema: schema(
+                json!({ "requisition_id": id_prop("Requisition id") }),
+                &["requisition_id"],
+            ),
+        },
+        CommandSpec {
+            name: "approve_requisition",
+            summary: "Approve a draft purchase requisition (draft → approved).",
+            usage: "erpcraft approve_requisition <requisition_id>",
+            primary_arg: Some("requisition_id"),
+            input_schema: schema(
+                json!({ "requisition_id": id_prop("Requisition id") }),
+                &["requisition_id"],
+            ),
+        },
+        CommandSpec {
+            name: "reject_requisition",
+            summary: "Reject a draft purchase requisition (draft → rejected).",
+            usage: "erpcraft reject_requisition <requisition_id>",
+            primary_arg: Some("requisition_id"),
+            input_schema: schema(
+                json!({ "requisition_id": id_prop("Requisition id") }),
+                &["requisition_id"],
+            ),
+        },
+        CommandSpec {
+            name: "cancel_requisition",
+            summary: "Cancel a draft or approved purchase requisition.",
+            usage: "erpcraft cancel_requisition <requisition_id>",
+            primary_arg: Some("requisition_id"),
+            input_schema: schema(
+                json!({ "requisition_id": id_prop("Requisition id") }),
+                &["requisition_id"],
+            ),
+        },
+        CommandSpec {
+            name: "create_purchase_order",
+            summary: "Create a procurement order with a supplier. With requisition_id (an approved requisition), supplier and lines default to the requisition's and the requisition converts. Distinct from MRP planning purchase orders.",
+            usage: "erpcraft create_purchase_order --json '{\"supplier_id\":1,\"lines\":[{\"item_id\":2,\"qty\":100,\"unit_price_cents\":1800}]}'",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "supplier_id": id_prop("Supplier id (optional when requisition_id names one)"),
+                    "requisition_id": id_prop("Approved requisition id (optional)"),
+                    "lines": line_items("Order lines: item_id, qty, agreed unit price (optional when requisition_id supplies them)", "Agreed unit price in cents")
+                }),
+                &[],
+            ),
+        },
+        CommandSpec {
+            name: "list_procurement_orders",
+            summary: "All procurement orders with lines, ordered and received totals.",
+            usage: "erpcraft list_procurement_orders",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "get_procurement_order",
+            summary: "One procurement order by id, with lines and received quantities.",
+            usage: "erpcraft get_procurement_order <order_id>",
+            primary_arg: Some("order_id"),
+            input_schema: schema(
+                json!({ "order_id": id_prop("Procurement order id") }),
+                &["order_id"],
+            ),
+        },
+        CommandSpec {
+            name: "cancel_purchase_order",
+            summary: "Cancel an open procurement order with nothing received against it.",
+            usage: "erpcraft cancel_purchase_order <order_id>",
+            primary_arg: Some("order_id"),
+            input_schema: schema(
+                json!({ "order_id": id_prop("Procurement order id") }),
+                &["order_id"],
+            ),
+        },
+        CommandSpec {
+            name: "receive_goods",
+            summary: "Receive goods against a procurement order (partial receipts allowed; over-receipt refused). Posts Dr inventory / Cr 2050 GR-IR at PO prices and moves stock on hand. Returns the receipt and its posted entry.",
+            usage: "erpcraft receive_goods --json '{\"order_id\":1,\"lines\":[{\"po_line_id\":1,\"qty\":60}]}'",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "order_id": id_prop("Procurement order id"),
+                    "lines": {
+                        "type": "array",
+                        "description": "Received lines: po_line_id and qty arrived",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "po_line_id": { "type": "integer" },
+                                "qty": { "type": "integer" }
+                            },
+                            "required": ["po_line_id", "qty"]
+                        }
+                    }
+                }),
+                &["order_id", "lines"],
+            ),
+        },
+        CommandSpec {
+            name: "list_goods_receipts",
+            summary: "Goods receipts, optionally filtered to one procurement order.",
+            usage: "erpcraft list_goods_receipts [--order-id <id>]",
+            primary_arg: None,
+            input_schema: schema(
+                json!({ "order_id": id_prop("Procurement order id (optional filter)") }),
+                &[],
+            ),
+        },
+        CommandSpec {
+            name: "record_ap_invoice",
+            summary: "Record a supplier invoice against a procurement order: posts Dr 2050 GR-IR at PO prices, the price difference to 6040 PPV, Cr 2000 AP at the invoice total, then runs the three-way match — variances land the invoice on_hold (recorded, not payable). Returns the AP invoice and its posted entry.",
+            usage: "erpcraft record_ap_invoice --json '{\"order_id\":1,\"lines\":[{\"po_line_id\":1,\"qty\":60,\"unit_price_cents\":1800}]}'",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "order_id": id_prop("Procurement order id"),
+                    "lines": {
+                        "type": "array",
+                        "description": "Invoiced lines: po_line_id, qty billed, unit price billed",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "po_line_id": { "type": "integer" },
+                                "qty": { "type": "integer" },
+                                "unit_price_cents": { "type": "integer" }
+                            },
+                            "required": ["po_line_id", "qty", "unit_price_cents"]
+                        }
+                    }
+                }),
+                &["order_id", "lines"],
+            ),
+        },
+        CommandSpec {
+            name: "list_ap_invoices",
+            summary: "All AP invoices with lines, live match variances, totals and balances.",
+            usage: "erpcraft list_ap_invoices",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "get_ap_invoice",
+            summary: "One AP invoice by id, with its three-way-match variances and any recorded match override.",
+            usage: "erpcraft get_ap_invoice <ap_invoice_id>",
+            primary_arg: Some("ap_invoice_id"),
+            input_schema: schema(
+                json!({ "ap_invoice_id": id_prop("AP invoice id") }),
+                &["ap_invoice_id"],
+            ),
+        },
+        CommandSpec {
+            name: "override_ap_match",
+            summary: "Override a three-way-match hold with a recorded reason and the overriding person's name; both are stored on the AP invoice. The invoice becomes payable; the variance facts stay visible.",
+            usage: "erpcraft override_ap_match --ap-invoice-id <id> --reason '…' --by '…'",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "ap_invoice_id": id_prop("AP invoice id"),
+                    "reason": { "type": "string", "description": "Why the variance is accepted (recorded)" },
+                    "by": { "type": "string", "description": "Who is overriding (recorded)" }
+                }),
+                &["ap_invoice_id", "reason", "by"],
+            ),
+        },
+        CommandSpec {
+            name: "pay_ap_invoice",
+            summary: "Pay (part of) an open AP invoice: posts Dr 2000 AP / Cr 1000 Cash and advances the invoice toward paid. On-hold (match variance) and overpayment are refused. Returns the payment and its posted entry. Above the configured approval threshold, actor and a different approver are required (controls).",
+            usage: "erpcraft pay_ap_invoice --ap-invoice-id <id> --amount-cents <cents>",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "ap_invoice_id": id_prop("AP invoice id"),
+                    "amount_cents": { "type": "integer", "description": "Payment amount in cents (positive)" },
+                    "actor": { "type": "string", "description": "Who is making the payment (required above the approval threshold)" },
+                    "approver": { "type": "string", "description": "Second approver, a different person with role approver/admin (required above the approval threshold); recorded on the payment and its entry" }
+                }),
+                &["ap_invoice_id", "amount_cents"],
+            ),
+        },
+        CommandSpec {
+            name: "list_ap_payments",
+            summary: "AP payments, optionally filtered to one AP invoice.",
+            usage: "erpcraft list_ap_payments [--ap-invoice-id <id>]",
+            primary_arg: None,
+            input_schema: schema(
+                json!({ "ap_invoice_id": id_prop("AP invoice id (optional filter)") }),
+                &[],
+            ),
+        },
+    ]
+}
+
+/// Controls commands (ENTERPRISE_GAPS.md §6/§7): fiscal periods,
+/// users/roles, and the payment approval threshold.
+fn controls_specs() -> Vec<CommandSpec> {
+    vec![
+        CommandSpec {
+            name: "list_fiscal_periods",
+            summary: "All fiscal periods with their date ranges and open/closed status.",
+            usage: "erpcraft list_fiscal_periods",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "create_fiscal_period",
+            summary: "Create an open fiscal period: a unique name and an inclusive ISO date range; ranges may not overlap existing periods.",
+            usage: "erpcraft create_fiscal_period --name 2026-11 --start-date 2026-11-01 --end-date 2026-11-30",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "name": { "type": "string", "description": "Period name, e.g. '2026-11'" },
+                    "start_date": { "type": "string", "description": "First day, YYYY-MM-DD" },
+                    "end_date": { "type": "string", "description": "Last day, YYYY-MM-DD" }
+                }),
+                &["name", "start_date", "end_date"],
+            ),
+        },
+        CommandSpec {
+            name: "close_fiscal_period",
+            summary: "Close a fiscal period: every posting path then refuses entries dated inside it. One-way in this build.",
+            usage: "erpcraft close_fiscal_period <period_id>",
+            primary_arg: Some("period_id"),
+            input_schema: schema(
+                json!({ "period_id": id_prop("Fiscal period id") }),
+                &["period_id"],
+            ),
+        },
+        CommandSpec {
+            name: "list_users",
+            summary: "All users in the controls registry, with roles (admin / approver / clerk).",
+            usage: "erpcraft list_users",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "create_user",
+            summary: "Create a user in the controls registry (names are unique; role is admin, approver, or clerk). Identities are names, not logins — see controls.rs.",
+            usage: "erpcraft create_user --name sam --role approver",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "name": { "type": "string" },
+                    "role": { "type": "string", "description": "admin | approver | clerk" }
+                }),
+                &["name", "role"],
+            ),
+        },
+        CommandSpec {
+            name: "list_control_settings",
+            summary: "All control settings (key/value), including the payment approval threshold when set.",
+            usage: "erpcraft list_control_settings",
+            primary_arg: None,
+            input_schema: schema(json!({}), &[]),
+        },
+        CommandSpec {
+            name: "set_approval_threshold",
+            summary: "Set the payment approval threshold in cents: payments above it (AR receipts and AP payments) require an actor and a different approver with role approver/admin, recorded on the payment and its entry.",
+            usage: "erpcraft set_approval_threshold --threshold-cents 100000",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "threshold_cents": { "type": "integer", "description": "Threshold in cents (payments strictly above need approval)" }
+                }),
+                &["threshold_cents"],
+            ),
+        },
+    ]
+}
+
 /// The full dispatch table, in door order: reads, order-to-cash,
-/// manual journal, builders, configurator.
+/// manual journal, builders, configurator, procure-to-pay, controls.
 pub fn all_specs() -> Vec<CommandSpec> {
     let mut out = specs();
     for (name, _, _, _) in BUILDERS {
         out.push(builder_spec(name));
     }
     out.extend(configurator_specs());
+    out.extend(procurement_specs());
+    out.extend(controls_specs());
     out
 }
 
@@ -941,6 +1286,11 @@ pub fn open_door_db() -> Result<Connection, DispatchError> {
     // the doors, not in open_db — see MRP_DESIGN.md.
     erpcraft_core::seed_mrp_demo_if_empty(&conn)
         .map_err(|e| DispatchError::internal(format!("cannot seed the MRP demo scenario: {e}")))?;
+    // Procure-to-pay seed (GR-IR/PPV accounts + demo suppliers) is
+    // likewise door-level — see procurement.rs for why.
+    erpcraft_core::seed_procurement_if_empty(&conn).map_err(|e| {
+        DispatchError::internal(format!("cannot seed the procure-to-pay data: {e}"))
+    })?;
     Ok(conn)
 }
 
@@ -1177,7 +1527,9 @@ pub fn dispatch(conn: &mut Connection, door: Door, name: &str, args: &Value) -> 
         "record_payment" => {
             let invoice_id = req_i64(args, "invoice_id")?;
             let amount = req_i64(args, "amount_cents")?;
-            let payment_id = record_payment(conn, invoice_id, amount)?;
+            let actor = opt_str(args, "actor");
+            let approver = opt_str(args, "approver");
+            let payment_id = record_payment_attributed(conn, invoice_id, amount, actor, approver)?;
             let payment = list_payments_for_invoice(conn, invoice_id)?
                 .into_iter()
                 .find(|p| p.id == payment_id)
@@ -1299,6 +1651,222 @@ pub fn dispatch(conn: &mut Connection, door: Door, name: &str, args: &Value) -> 
             to_json(dependency)
         }
 
+        // Procure-to-pay
+        "list_suppliers" => to_json(list_suppliers(conn)?),
+        "create_supplier" => {
+            let name = req_str(args, "name")?;
+            let id = create_supplier(conn, &name)?;
+            let supplier = list_suppliers(conn)?
+                .into_iter()
+                .find(|s| s.id == id)
+                .ok_or_else(|| {
+                    DispatchError::internal(format!(
+                        "supplier {id} was created but could not be read back"
+                    ))
+                })?;
+            to_json(supplier)
+        }
+        "create_requisition" => {
+            let new: NewRequisition = parse_as(args, "create_requisition")?;
+            let id = create_requisition(conn, &new)?;
+            match get_requisition(conn, id)? {
+                Some(req) => to_json(req),
+                None => Err(DispatchError::internal(format!(
+                    "requisition {id} was created but could not be read back"
+                ))),
+            }
+        }
+        "list_requisitions" => to_json(list_requisitions(conn)?),
+        "get_requisition" => {
+            let id = req_i64(args, "requisition_id")?;
+            match get_requisition(conn, id)? {
+                Some(req) => to_json(req),
+                None => Err(DispatchError::refused(format!(
+                    "no purchase requisition with id {id}"
+                ))),
+            }
+        }
+        "approve_requisition" => requisition_step(conn, args, approve_requisition),
+        "reject_requisition" => requisition_step(conn, args, reject_requisition),
+        "cancel_requisition" => requisition_step(conn, args, cancel_requisition),
+        "create_purchase_order" => {
+            let new: NewProcurementOrder = parse_as(args, "create_purchase_order")?;
+            let id = create_purchase_order(conn, &new)?;
+            match get_procurement_order(conn, id)? {
+                Some(order) => to_json(order),
+                None => Err(DispatchError::internal(format!(
+                    "procurement order {id} was created but could not be read back"
+                ))),
+            }
+        }
+        "list_procurement_orders" => to_json(list_procurement_orders(conn)?),
+        "get_procurement_order" => {
+            let id = req_i64(args, "order_id")?;
+            match get_procurement_order(conn, id)? {
+                Some(order) => to_json(order),
+                None => Err(DispatchError::refused(format!(
+                    "no procurement order with id {id}"
+                ))),
+            }
+        }
+        "cancel_purchase_order" => {
+            let id = req_i64(args, "order_id")?;
+            cancel_purchase_order(conn, id)?;
+            match get_procurement_order(conn, id)? {
+                Some(order) => to_json(order),
+                None => Err(DispatchError::internal(format!(
+                    "procurement order {id} vanished after cancelling"
+                ))),
+            }
+        }
+        "receive_goods" => {
+            let po_id = req_i64(args, "order_id")?;
+            let lines_value = args.get("lines").cloned().ok_or_else(|| {
+                DispatchError::refused(
+                    "argument 'lines' is required: an array of {po_line_id, qty}",
+                )
+            })?;
+            let lines: Vec<ReceiveLineInput> = serde_json::from_value(lines_value)
+                .map_err(|e| DispatchError::refused(format!("invalid receive_goods lines: {e}")))?;
+            let receipt_id = receive_goods(conn, po_id, &lines)?;
+            let receipt = list_goods_receipts(conn, Some(po_id))?
+                .into_iter()
+                .find(|r| r.id == receipt_id)
+                .ok_or_else(|| {
+                    DispatchError::internal(format!(
+                        "goods receipt {receipt_id} was recorded but could not be read back"
+                    ))
+                })?;
+            let entry = match receipt.gl_entry_id {
+                Some(_) => entry_or_internal(conn, receipt.gl_entry_id, "goods receipt")?,
+                None => Value::Null,
+            };
+            Ok(json!({
+                "receipt": serde_json::to_value(&receipt).unwrap_or(Value::Null),
+                "entry": entry,
+            }))
+        }
+        "list_goods_receipts" => to_json(list_goods_receipts(conn, opt_i64(args, "order_id"))?),
+        "record_ap_invoice" => {
+            let po_id = req_i64(args, "order_id")?;
+            let lines_value = args.get("lines").cloned().ok_or_else(|| {
+                DispatchError::refused(
+                    "argument 'lines' is required: an array of {po_line_id, qty, unit_price_cents}",
+                )
+            })?;
+            let lines: Vec<ApLineInput> = serde_json::from_value(lines_value).map_err(|e| {
+                DispatchError::refused(format!("invalid record_ap_invoice lines: {e}"))
+            })?;
+            let id = record_ap_invoice(conn, &NewApInvoice { po_id, lines })?;
+            let invoice = get_ap_invoice(conn, id)?.ok_or_else(|| {
+                DispatchError::internal(format!(
+                    "AP invoice {id} was recorded but could not be read back"
+                ))
+            })?;
+            let entry = entry_or_internal(conn, invoice.gl_entry_id, "AP invoice")?;
+            Ok(json!({
+                "ap_invoice": serde_json::to_value(&invoice).unwrap_or(Value::Null),
+                "entry": entry,
+            }))
+        }
+        "list_ap_invoices" => to_json(list_ap_invoices(conn)?),
+        "get_ap_invoice" => {
+            let id = req_i64(args, "ap_invoice_id")?;
+            match get_ap_invoice(conn, id)? {
+                Some(invoice) => to_json(invoice),
+                None => Err(DispatchError::refused(format!(
+                    "no AP invoice with id {id}"
+                ))),
+            }
+        }
+        "override_ap_match" => {
+            let id = req_i64(args, "ap_invoice_id")?;
+            let reason = req_str(args, "reason")?;
+            let by = req_str(args, "by")?;
+            override_ap_match(conn, id, &reason, &by)?;
+            match get_ap_invoice(conn, id)? {
+                Some(invoice) => to_json(invoice),
+                None => Err(DispatchError::internal(format!(
+                    "AP invoice {id} vanished after the match override"
+                ))),
+            }
+        }
+        "pay_ap_invoice" => {
+            let ap_invoice_id = req_i64(args, "ap_invoice_id")?;
+            let amount = req_i64(args, "amount_cents")?;
+            let actor = opt_str(args, "actor");
+            let approver = opt_str(args, "approver");
+            let payment_id =
+                pay_ap_invoice_attributed(conn, ap_invoice_id, amount, actor, approver)?;
+            let payment = list_ap_payments_for_invoice(conn, ap_invoice_id)?
+                .into_iter()
+                .find(|p| p.id == payment_id)
+                .ok_or_else(|| {
+                    DispatchError::internal(format!(
+                        "AP payment {payment_id} was recorded but could not be read back"
+                    ))
+                })?;
+            let entry = entry_or_internal(conn, payment.gl_entry_id, "AP payment")?;
+            Ok(json!({
+                "payment": serde_json::to_value(&payment).unwrap_or(Value::Null),
+                "entry": entry,
+            }))
+        }
+        "list_ap_payments" => match opt_i64(args, "ap_invoice_id") {
+            Some(id) => to_json(list_ap_payments_for_invoice(conn, id)?),
+            None => to_json(list_ap_payments(conn)?),
+        },
+
+        // Controls
+        "list_fiscal_periods" => to_json(list_fiscal_periods(conn)?),
+        "create_fiscal_period" => {
+            let name = req_str(args, "name")?;
+            let start = req_str(args, "start_date")?;
+            let end = req_str(args, "end_date")?;
+            let id = create_fiscal_period(conn, &name, &start, &end)?;
+            let period = list_fiscal_periods(conn)?
+                .into_iter()
+                .find(|p| p.id == id)
+                .ok_or_else(|| {
+                    DispatchError::internal(format!(
+                        "fiscal period {id} was created but could not be read back"
+                    ))
+                })?;
+            to_json(period)
+        }
+        "close_fiscal_period" => {
+            let id = req_i64(args, "period_id")?;
+            close_fiscal_period(conn, id)?;
+            let period = list_fiscal_periods(conn)?
+                .into_iter()
+                .find(|p| p.id == id)
+                .ok_or_else(|| {
+                    DispatchError::internal(format!("fiscal period {id} vanished after closing"))
+                })?;
+            to_json(period)
+        }
+        "list_users" => to_json(list_users(conn)?),
+        "create_user" => {
+            let name = req_str(args, "name")?;
+            let role = req_str(args, "role")?;
+            let id = create_user(conn, &name, &role)?;
+            let user = list_users(conn)?
+                .into_iter()
+                .find(|u| u.id == id)
+                .ok_or_else(|| {
+                    DispatchError::internal(format!(
+                        "user {id} was created but could not be read back"
+                    ))
+                })?;
+            to_json(user)
+        }
+        "list_control_settings" => to_json(list_control_settings(conn)?),
+        "set_approval_threshold" => {
+            let threshold = req_i64(args, "threshold_cents")?;
+            set_approval_threshold(conn, threshold)?;
+            to_json(list_control_settings(conn)?)
+        }
+
         other => {
             if let Some((_, memo, debit, credit)) = BUILDERS.iter().find(|(n, _, _, _)| *n == other)
             {
@@ -1351,6 +1919,23 @@ fn order_transition(
         Some(order) => to_json(order),
         None => Err(DispatchError::internal(format!(
             "sales order {id} vanished after the transition"
+        ))),
+    }
+}
+
+/// Requisition lifecycle steps take `&Connection` in core (they post
+/// nothing), unlike the O2C transitions — hence their own helper.
+fn requisition_step(
+    conn: &Connection,
+    args: &Value,
+    step: fn(&Connection, i64) -> Result<(), LedgerError>,
+) -> DispatchResult {
+    let id = req_i64(args, "requisition_id")?;
+    step(conn, id)?;
+    match get_requisition(conn, id)? {
+        Some(req) => to_json(req),
+        None => Err(DispatchError::internal(format!(
+            "requisition {id} vanished after the transition"
         ))),
     }
 }

@@ -18,16 +18,24 @@ use axum::{
 };
 use erpcraft_core::rusqlite::Connection;
 use erpcraft_core::{
-    accept_quote, account_count, account_ledger, add_characteristic, cancel_order,
+    accept_quote, account_count, account_ledger, add_characteristic, approve_requisition,
+    cancel_order, cancel_purchase_order, cancel_requisition, close_fiscal_period,
     config_model_count, create_component, create_config_model, create_dependency,
-    create_invoice_from_order, create_order_from_quote, create_quote, customer_count,
-    decline_quote, entry_count, evaluate, expire_quote, fulfil_order, get_config_model, get_entry,
-    get_invoice, get_order, get_quote, invoice_count, issue_invoice, list_accounts,
-    list_config_models, list_customers, list_entries, list_invoices, list_items, list_orders,
-    list_payments, list_payments_for_invoice, list_quotes, open_db, order_count, payment_count,
-    post_entry, quote_count, record_payment, record_sales_return, send_quote, trial_balance,
-    void_invoice, AuditFilter, ConfigValue, Explanation, LedgerError, NewCharacteristic,
-    NewComponent, NewConfigModel, NewDependency, NewEntry, NewQuote, ReturnLine, DEMO_COMPANY,
+    create_fiscal_period, create_invoice_from_order, create_order_from_quote,
+    create_purchase_order, create_quote, create_requisition, create_supplier, create_user,
+    customer_count, decline_quote, entry_count, evaluate, expire_quote, fulfil_order,
+    get_ap_invoice, get_config_model, get_entry, get_invoice, get_order, get_procurement_order,
+    get_quote, get_requisition, invoice_count, issue_invoice, list_accounts, list_ap_invoices,
+    list_ap_payments, list_ap_payments_for_invoice, list_config_models, list_control_settings,
+    list_customers, list_entries, list_fiscal_periods, list_goods_receipts, list_invoices,
+    list_items, list_orders, list_payments, list_payments_for_invoice, list_procurement_orders,
+    list_quotes, list_requisitions, list_suppliers, list_users, open_db, order_count,
+    override_ap_match, pay_ap_invoice_attributed, payment_count, post_entry, quote_count,
+    receive_goods, record_ap_invoice, record_payment_attributed, record_sales_return,
+    reject_requisition, send_quote, set_approval_threshold, trial_balance, void_invoice,
+    ApLineInput, AuditFilter, ConfigValue, Explanation, LedgerError, NewApInvoice,
+    NewCharacteristic, NewComponent, NewConfigModel, NewDependency, NewEntry, NewProcurementOrder,
+    NewQuote, NewRequisition, ReceiveLineInput, ReturnLine, DEMO_COMPANY,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -87,11 +95,54 @@ struct CreateInvoice {
 #[derive(Deserialize)]
 struct RecordPayment {
     amount_cents: i64,
+    /// Controls approval rule (optional): who is paying, and the
+    /// second approver when the amount is above the threshold.
+    actor: Option<String>,
+    approver: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct RecordReturn {
     lines: Vec<ReturnLine>,
+}
+
+#[derive(Deserialize)]
+struct CreateSupplier {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ReceiveGoods {
+    lines: Vec<ReceiveLineInput>,
+}
+
+#[derive(Deserialize)]
+struct RecordApInvoice {
+    lines: Vec<ApLineInput>,
+}
+
+#[derive(Deserialize)]
+struct OverrideMatch {
+    reason: String,
+    by: String,
+}
+
+#[derive(Deserialize)]
+struct CreateFiscalPeriod {
+    name: String,
+    start_date: String,
+    end_date: String,
+}
+
+#[derive(Deserialize)]
+struct CreateUser {
+    name: String,
+    role: String,
+}
+
+#[derive(Deserialize)]
+struct SetApprovalThreshold {
+    threshold_cents: i64,
 }
 
 #[derive(Deserialize)]
@@ -460,7 +511,14 @@ async fn record_payment_handler(
     Json(body): Json<RecordPayment>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
     let mut conn = db.lock().expect("db lock");
-    let payment_id = record_payment(&mut conn, id, body.amount_cents).map_err(bad_request)?;
+    let payment_id = record_payment_attributed(
+        &mut conn,
+        id,
+        body.amount_cents,
+        body.actor.as_deref(),
+        body.approver.as_deref(),
+    )
+    .map_err(bad_request)?;
     let payments = list_payments_for_invoice(&conn, id).map_err(server_error)?;
     let payment = payments
         .into_iter()
@@ -639,6 +697,354 @@ async fn evaluate_handler(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Procure-to-pay (ENTERPRISE_GAPS.md §3): suppliers, requisitions,
+// procurement orders, goods receipts, AP invoices, AP payments.
+// ---------------------------------------------------------------------------
+
+async fn list_suppliers_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let suppliers = list_suppliers(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(suppliers).expect("serializable")))
+}
+
+async fn create_supplier_handler(
+    State(db): State<SharedDb>,
+    Json(body): Json<CreateSupplier>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_supplier(&conn, &body.name).map_err(bad_request)?;
+    let supplier = list_suppliers(&conn)
+        .map_err(server_error)?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| not_found("supplier", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(supplier).expect("serializable")),
+    ))
+}
+
+async fn list_requisitions_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let reqs = list_requisitions(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(reqs).expect("serializable")))
+}
+
+async fn create_requisition_handler(
+    State(db): State<SharedDb>,
+    Json(new): Json<NewRequisition>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_requisition(&conn, &new).map_err(bad_request)?;
+    let req = get_requisition(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("purchase requisition", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(req).expect("serializable")),
+    ))
+}
+
+async fn get_requisition_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let req = get_requisition(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("purchase requisition", id))?;
+    Ok(Json(serde_json::to_value(req).expect("serializable")))
+}
+
+async fn approve_requisition_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    approve_requisition(&conn, id).map_err(bad_request)?;
+    let req = get_requisition(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("purchase requisition", id))?;
+    Ok(Json(serde_json::to_value(req).expect("serializable")))
+}
+
+async fn reject_requisition_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    reject_requisition(&conn, id).map_err(bad_request)?;
+    let req = get_requisition(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("purchase requisition", id))?;
+    Ok(Json(serde_json::to_value(req).expect("serializable")))
+}
+
+async fn cancel_requisition_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    cancel_requisition(&conn, id).map_err(bad_request)?;
+    let req = get_requisition(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("purchase requisition", id))?;
+    Ok(Json(serde_json::to_value(req).expect("serializable")))
+}
+
+async fn list_procurement_orders_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let orders = list_procurement_orders(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(orders).expect("serializable")))
+}
+
+async fn create_purchase_order_handler(
+    State(db): State<SharedDb>,
+    Json(new): Json<NewProcurementOrder>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let mut conn = db.lock().expect("db lock");
+    let id = create_purchase_order(&mut conn, &new).map_err(bad_request)?;
+    let order = get_procurement_order(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("procurement order", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(order).expect("serializable")),
+    ))
+}
+
+async fn get_procurement_order_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let order = get_procurement_order(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("procurement order", id))?;
+    Ok(Json(serde_json::to_value(order).expect("serializable")))
+}
+
+async fn cancel_purchase_order_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    cancel_purchase_order(&conn, id).map_err(bad_request)?;
+    let order = get_procurement_order(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("procurement order", id))?;
+    Ok(Json(serde_json::to_value(order).expect("serializable")))
+}
+
+async fn receive_goods_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+    Json(body): Json<ReceiveGoods>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let mut conn = db.lock().expect("db lock");
+    let receipt_id = receive_goods(&mut conn, id, &body.lines).map_err(bad_request)?;
+    let receipt = list_goods_receipts(&conn, Some(id))
+        .map_err(server_error)?
+        .into_iter()
+        .find(|r| r.id == receipt_id)
+        .ok_or_else(|| not_found("goods receipt", receipt_id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(receipt).expect("serializable")),
+    ))
+}
+
+async fn list_goods_receipts_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let receipts = list_goods_receipts(&conn, None).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(receipts).expect("serializable")))
+}
+
+async fn record_ap_invoice_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+    Json(body): Json<RecordApInvoice>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let mut conn = db.lock().expect("db lock");
+    let ap_id = record_ap_invoice(
+        &mut conn,
+        &NewApInvoice {
+            po_id: id,
+            lines: body.lines,
+        },
+    )
+    .map_err(bad_request)?;
+    let invoice = get_ap_invoice(&conn, ap_id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("AP invoice", ap_id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(invoice).expect("serializable")),
+    ))
+}
+
+async fn list_ap_invoices_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let invoices = list_ap_invoices(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(invoices).expect("serializable")))
+}
+
+async fn get_ap_invoice_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let invoice = get_ap_invoice(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("AP invoice", id))?;
+    Ok(Json(serde_json::to_value(invoice).expect("serializable")))
+}
+
+async fn override_ap_match_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+    Json(body): Json<OverrideMatch>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    override_ap_match(&conn, id, &body.reason, &body.by).map_err(bad_request)?;
+    let invoice = get_ap_invoice(&conn, id)
+        .map_err(server_error)?
+        .ok_or_else(|| not_found("AP invoice", id))?;
+    Ok(Json(serde_json::to_value(invoice).expect("serializable")))
+}
+
+async fn pay_ap_invoice_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+    Json(body): Json<RecordPayment>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let mut conn = db.lock().expect("db lock");
+    let payment_id = pay_ap_invoice_attributed(
+        &mut conn,
+        id,
+        body.amount_cents,
+        body.actor.as_deref(),
+        body.approver.as_deref(),
+    )
+    .map_err(bad_request)?;
+    let payment = list_ap_payments_for_invoice(&conn, id)
+        .map_err(server_error)?
+        .into_iter()
+        .find(|p| p.id == payment_id)
+        .ok_or_else(|| not_found("AP payment", payment_id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(payment).expect("serializable")),
+    ))
+}
+
+async fn list_ap_payments_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let payments = list_ap_payments(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(payments).expect("serializable")))
+}
+
+// ---------------------------------------------------------------------------
+// Controls (ENTERPRISE_GAPS.md §6/§7): fiscal periods, users/roles,
+// and the payment approval threshold.
+// ---------------------------------------------------------------------------
+
+async fn list_fiscal_periods_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let periods = list_fiscal_periods(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(periods).expect("serializable")))
+}
+
+async fn create_fiscal_period_handler(
+    State(db): State<SharedDb>,
+    Json(body): Json<CreateFiscalPeriod>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_fiscal_period(&conn, &body.name, &body.start_date, &body.end_date)
+        .map_err(bad_request)?;
+    let period = list_fiscal_periods(&conn)
+        .map_err(server_error)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| not_found("fiscal period", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(period).expect("serializable")),
+    ))
+}
+
+async fn close_fiscal_period_handler(
+    State(db): State<SharedDb>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    close_fiscal_period(&conn, id).map_err(bad_request)?;
+    let period = list_fiscal_periods(&conn)
+        .map_err(server_error)?
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| not_found("fiscal period", id))?;
+    Ok(Json(serde_json::to_value(period).expect("serializable")))
+}
+
+async fn list_users_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let users = list_users(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(users).expect("serializable")))
+}
+
+async fn create_user_handler(
+    State(db): State<SharedDb>,
+    Json(body): Json<CreateUser>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let id = create_user(&conn, &body.name, &body.role).map_err(bad_request)?;
+    let user = list_users(&conn)
+        .map_err(server_error)?
+        .into_iter()
+        .find(|u| u.id == id)
+        .ok_or_else(|| not_found("user", id))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(user).expect("serializable")),
+    ))
+}
+
+async fn list_control_settings_handler(
+    State(db): State<SharedDb>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let settings = list_control_settings(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(settings).expect("serializable")))
+}
+
+async fn set_approval_threshold_handler(
+    State(db): State<SharedDb>,
+    Json(body): Json<SetApprovalThreshold>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    set_approval_threshold(&conn, body.threshold_cents).map_err(bad_request)?;
+    let settings = list_control_settings(&conn).map_err(server_error)?;
+    Ok(Json(serde_json::to_value(settings).expect("serializable")))
+}
+
 #[tokio::main]
 async fn main() {
     let db_path = std::env::var("ERPCRAFT_DB").unwrap_or_else(|_| "erpcraft.db".to_string());
@@ -649,6 +1055,7 @@ async fn main() {
 
     let conn = open_db(&db_path).expect("open ledger database");
     erpcraft_core::seed_mrp_demo_if_empty(&conn).expect("seed MRP demo scenario");
+    erpcraft_core::seed_procurement_if_empty(&conn).expect("seed procure-to-pay data");
     let db: SharedDb = Arc::new(Mutex::new(conn));
 
     let app = Router::new()
@@ -703,6 +1110,60 @@ async fn main() {
             post(create_dependency_handler),
         )
         .route("/config-models/{id}/evaluate", post(evaluate_handler))
+        .route("/suppliers", get(list_suppliers_handler))
+        .route("/suppliers", post(create_supplier_handler))
+        .route("/purchase-requisitions", get(list_requisitions_handler))
+        .route("/purchase-requisitions", post(create_requisition_handler))
+        .route("/purchase-requisitions/{id}", get(get_requisition_handler))
+        .route(
+            "/purchase-requisitions/{id}/approve",
+            post(approve_requisition_handler),
+        )
+        .route(
+            "/purchase-requisitions/{id}/reject",
+            post(reject_requisition_handler),
+        )
+        .route(
+            "/purchase-requisitions/{id}/cancel",
+            post(cancel_requisition_handler),
+        )
+        .route("/purchase-orders", get(list_procurement_orders_handler))
+        .route("/purchase-orders", post(create_purchase_order_handler))
+        .route("/purchase-orders/{id}", get(get_procurement_order_handler))
+        .route(
+            "/purchase-orders/{id}/cancel",
+            post(cancel_purchase_order_handler),
+        )
+        .route(
+            "/purchase-orders/{id}/receipts",
+            post(receive_goods_handler),
+        )
+        .route(
+            "/purchase-orders/{id}/invoices",
+            post(record_ap_invoice_handler),
+        )
+        .route("/goods-receipts", get(list_goods_receipts_handler))
+        .route("/ap-invoices", get(list_ap_invoices_handler))
+        .route("/ap-invoices/{id}", get(get_ap_invoice_handler))
+        .route(
+            "/ap-invoices/{id}/override-match",
+            post(override_ap_match_handler),
+        )
+        .route("/ap-invoices/{id}/payments", post(pay_ap_invoice_handler))
+        .route("/ap-payments", get(list_ap_payments_handler))
+        .route("/fiscal-periods", get(list_fiscal_periods_handler))
+        .route("/fiscal-periods", post(create_fiscal_period_handler))
+        .route(
+            "/fiscal-periods/{id}/close",
+            post(close_fiscal_period_handler),
+        )
+        .route("/users", get(list_users_handler))
+        .route("/users", post(create_user_handler))
+        .route("/control-settings", get(list_control_settings_handler))
+        .route(
+            "/control-settings/approval-threshold",
+            post(set_approval_threshold_handler),
+        )
         .with_state(db);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

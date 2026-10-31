@@ -208,6 +208,10 @@ fn oracle_day_through_the_cli() {
         ("1300", 4_200_000, 0),
         ("1310", 0, 715_000),
         ("2000", 0, 920_000),
+        // Door-seeded procure-to-pay accounts (ENTERPRISE_GAPS.md §3):
+        // present at zero on the oracle day — the day's 22-account
+        // oracle below/above is unchanged, as are the totals.
+        ("2050", 0, 0),
         ("2100", 0, 0),
         ("2200", 0, 150_000),
         ("2300", 0, 2_500_000),
@@ -221,6 +225,7 @@ fn oracle_day_through_the_cli() {
         ("6010", 12_500, 0),
         ("6020", 35_000, 0),
         ("6030", 0, 0),
+        ("6040", 0, 0),
     ];
     let rows = tb["rows"].as_array().unwrap();
     assert_eq!(rows.len(), expected.len());

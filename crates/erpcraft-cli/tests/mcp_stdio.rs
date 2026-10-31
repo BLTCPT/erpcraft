@@ -98,7 +98,7 @@ fn the_full_loop_over_stdio() {
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(tools.len(), 58, "every command is a tool");
+    assert_eq!(tools.len(), 85, "every command is a tool");
     assert!(names.contains(&"create_invoice") && names.contains(&"issue_invoice"));
     assert!(names.contains(&"record_return") && names.contains(&"evaluate_config"));
 

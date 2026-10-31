@@ -121,6 +121,98 @@ fn precondition_prunes_galvanized_for_aluminum_and_rejects_it_if_chosen() {
 }
 
 // ---------------------------------------------------------------------------
+// 1b. A conflict already reported by its own dependency must not ALSO
+//     spawn "dead end" explanations for unrelated characteristics:
+//     with a broken assignment in place, every remaining value is
+//     trivially un-completable, and blaming the same dependency for
+//     each one just repeats its sentence (the demo polish fix).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_conflict_does_not_also_report_spurious_dead_ends() {
+    let conn = open_db(":memory:").unwrap();
+    let model = demo_model(&conn);
+    let precondition_id = dep_id(&model, "precondition", "finish=galvanized");
+
+    let eval = evaluate(
+        &model,
+        &config(&[
+            ("material", code("aluminum")),
+            ("finish", code("galvanized")),
+            ("quantity", ConfigValue::Int(5)),
+        ]),
+    );
+    assert!(matches!(eval.verdict, Verdict::Inconsistent));
+    assert_eq!(
+        eval.explanations.len(),
+        1,
+        "exactly one explanation — the precondition conflict itself: {:?}",
+        eval.explanations
+    );
+    assert_eq!(eval.explanations[0].dependency_id, Some(precondition_id));
+    // The selectable-space analysis itself is unchanged: no mounting
+    // value can complete this (broken) configuration.
+    assert!(eval.selectable.get("mounting").unwrap().is_empty());
+}
+
+#[test]
+fn a_genuine_dead_end_still_explains_itself() {
+    let conn = open_db(":memory:").unwrap();
+    let model = demo_model(&conn);
+    // Both mounting values require a bare finish in this test's model.
+    for target in ["mounting=standard", "mounting=reinforced"] {
+        create_dependency(
+            &conn,
+            model.id,
+            &NewDependency {
+                kind: "precondition".to_string(),
+                target: target.to_string(),
+                expr: Expr::Eq {
+                    char_code: "finish".to_string(),
+                    value: serde_json::Value::String("bare".to_string()),
+                },
+                source_text: format!("{target} is offered only on bare brackets."),
+                created_by: "test".to_string(),
+            },
+        )
+        .unwrap();
+    }
+    let model = demo_model(&conn);
+
+    // Powder-coat is a perfectly consistent choice — but it leaves
+    // mounting with no available value at all: a real dead end, and
+    // the only problem with this configuration.
+    let eval = evaluate(
+        &model,
+        &config(&[
+            ("material", code("steel")),
+            ("finish", code("powder-coat")),
+            ("quantity", ConfigValue::Int(5)),
+        ]),
+    );
+    assert!(matches!(eval.verdict, Verdict::Inconsistent));
+    assert_eq!(
+        eval.explanations.len(),
+        2,
+        "one dead-end explanation per eliminated mounting value: {:?}",
+        eval.explanations
+    );
+    for e in &eval.explanations {
+        assert_eq!(
+            e.message_parts.characteristics,
+            vec!["mounting".to_string()]
+        );
+    }
+    let blamed: Vec<&str> = eval
+        .explanations
+        .iter()
+        .map(|e| e.message_parts.values[0].as_str())
+        .collect();
+    assert!(blamed.contains(&"mounting=standard"));
+    assert!(blamed.contains(&"mounting=reinforced"));
+}
+
+// ---------------------------------------------------------------------------
 // 2. Selection conditions and constraint narrowing force values and
 //    components — each naming the dependency responsible.
 // ---------------------------------------------------------------------------

@@ -1,0 +1,836 @@
+ERPCraft — the 6-step demo, recorded from a fresh database.
+Driver: demo-video/run-demo.sh · Binary: target/debug/erpcraft (cargo build -p erpcraft-cli)
+
+# Setup (README): fresh database; the CLI seeds Cascade Precision Parts on first open.
+$ export ERPCRAFT_DB=/tmp/erpcraft-demo-video.db; rm -f $ERPCRAFT_DB
+
+# ── Step 1 · Seed + health, and the opening books ─────────────
+
+$ erpcraft health
+{
+  "accounts": 22,
+  "config_models": 1,
+  "customers": 4,
+  "invoices": 0,
+  "journal_entries": 1,
+  "orders": 0,
+  "payments": 0,
+  "quotes": 0,
+  "status": "ok"
+}
+[exit 0]
+
+$ erpcraft trial_balance
+{
+  "rows": [
+    {
+      "account_type": "asset",
+      "code": "1000",
+      "credit_cents": 0,
+      "debit_cents": 4820000,
+      "name": "Cash"
+    },
+    {
+      "account_type": "asset",
+      "code": "1100",
+      "credit_cents": 0,
+      "debit_cents": 1240000,
+      "name": "Accounts Receivable"
+    },
+    {
+      "account_type": "asset",
+      "code": "1120",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Prepaid Insurance"
+    },
+    {
+      "account_type": "asset",
+      "code": "1200",
+      "credit_cents": 0,
+      "debit_cents": 860000,
+      "name": "Raw Materials Inventory"
+    },
+    {
+      "account_type": "asset",
+      "code": "1210",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Work in Process (WIP)"
+    },
+    {
+      "account_type": "asset",
+      "code": "1220",
+      "credit_cents": 0,
+      "debit_cents": 930000,
+      "name": "Finished Goods Inventory"
+    },
+    {
+      "account_type": "asset",
+      "code": "1300",
+      "credit_cents": 0,
+      "debit_cents": 4200000,
+      "name": "Equipment"
+    },
+    {
+      "account_type": "contra_asset",
+      "code": "1310",
+      "credit_cents": 680000,
+      "debit_cents": 0,
+      "name": "Accumulated Depreciation — Equipment"
+    },
+    {
+      "account_type": "liability",
+      "code": "2000",
+      "credit_cents": 970000,
+      "debit_cents": 0,
+      "name": "Accounts Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2100",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Sales Tax Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2200",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Customer Deposits"
+    },
+    {
+      "account_type": "liability",
+      "code": "2300",
+      "credit_cents": 2500000,
+      "debit_cents": 0,
+      "name": "Loan Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2400",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Wages Payable"
+    },
+    {
+      "account_type": "equity",
+      "code": "3000",
+      "credit_cents": 6500000,
+      "debit_cents": 0,
+      "name": "Owner's Equity"
+    },
+    {
+      "account_type": "equity",
+      "code": "3100",
+      "credit_cents": 1400000,
+      "debit_cents": 0,
+      "name": "Retained Earnings"
+    },
+    {
+      "account_type": "revenue",
+      "code": "4000",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Sales Revenue"
+    },
+    {
+      "account_type": "contra_revenue",
+      "code": "4010",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Sales Returns"
+    },
+    {
+      "account_type": "expense",
+      "code": "5000",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Cost of Goods Sold"
+    },
+    {
+      "account_type": "expense",
+      "code": "6000",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Rent Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6010",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Interest Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6020",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Depreciation Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6030",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Supplies Expense"
+    }
+  ],
+  "total_credit_cents": 12050000,
+  "total_debit_cents": 12050000
+}
+[exit 0]
+
+# ── Step 2 · Configured quote: steel + galvanized forces the reinforced mount, $162.00/unit ──
+
+$ erpcraft create_quote --json {"customer_id":1,"lines":[{"item_id":1,"qty":50,"configuration":{"material":"steel","finish":"galvanized"}}]}
+{
+  "customer_id": 1,
+  "customer_name": "Acme",
+  "id": 1,
+  "lines": [
+    {
+      "configuration": {
+        "dependency_fingerprint": "7a6b11dc1dfd7fa9",
+        "forced": {
+          "mounting": {
+            "dependency_id": 7,
+            "kind": "constraint",
+            "value": "reinforced"
+          }
+        },
+        "model_id": 1,
+        "selected_components": [
+          "steel-blank",
+          "galvanized-finish",
+          "reinforced-mount"
+        ],
+        "standard_cost_cents": 9100,
+        "unit_price_cents": 16200,
+        "values": {
+          "finish": "galvanized",
+          "material": "steel",
+          "mounting": "reinforced",
+          "quantity": 50
+        },
+        "verdict": "consistent"
+      },
+      "item_id": 1,
+      "line_total_cents": 810000,
+      "qty": 50,
+      "sku": "BRK-100",
+      "standard_cost_cents": 9100,
+      "unit_price_cents": 16200
+    }
+  ],
+  "status": "draft",
+  "total_cents": 810000
+}
+[exit 0]
+
+$ erpcraft send_quote 1
+{
+  "customer_id": 1,
+  "customer_name": "Acme",
+  "id": 1,
+  "lines": [
+    {
+      "configuration": {
+        "dependency_fingerprint": "7a6b11dc1dfd7fa9",
+        "forced": {
+          "mounting": {
+            "dependency_id": 7,
+            "kind": "constraint",
+            "value": "reinforced"
+          }
+        },
+        "model_id": 1,
+        "selected_components": [
+          "steel-blank",
+          "galvanized-finish",
+          "reinforced-mount"
+        ],
+        "standard_cost_cents": 9100,
+        "unit_price_cents": 16200,
+        "values": {
+          "finish": "galvanized",
+          "material": "steel",
+          "mounting": "reinforced",
+          "quantity": 50
+        },
+        "verdict": "consistent"
+      },
+      "item_id": 1,
+      "line_total_cents": 810000,
+      "qty": 50,
+      "sku": "BRK-100",
+      "standard_cost_cents": 9100,
+      "unit_price_cents": 16200
+    }
+  ],
+  "status": "sent",
+  "total_cents": 810000
+}
+[exit 0]
+
+$ erpcraft accept_quote 1
+{
+  "customer_id": 1,
+  "customer_name": "Acme",
+  "id": 1,
+  "lines": [
+    {
+      "configuration": {
+        "dependency_fingerprint": "7a6b11dc1dfd7fa9",
+        "forced": {
+          "mounting": {
+            "dependency_id": 7,
+            "kind": "constraint",
+            "value": "reinforced"
+          }
+        },
+        "model_id": 1,
+        "selected_components": [
+          "steel-blank",
+          "galvanized-finish",
+          "reinforced-mount"
+        ],
+        "standard_cost_cents": 9100,
+        "unit_price_cents": 16200,
+        "values": {
+          "finish": "galvanized",
+          "material": "steel",
+          "mounting": "reinforced",
+          "quantity": 50
+        },
+        "verdict": "consistent"
+      },
+      "item_id": 1,
+      "line_total_cents": 810000,
+      "qty": 50,
+      "sku": "BRK-100",
+      "standard_cost_cents": 9100,
+      "unit_price_cents": 16200
+    }
+  ],
+  "status": "accepted",
+  "total_cents": 810000
+}
+[exit 0]
+
+$ erpcraft create_order 1
+{
+  "customer_id": 1,
+  "customer_name": "Acme",
+  "id": 1,
+  "lines": [
+    {
+      "configuration": {
+        "dependency_fingerprint": "7a6b11dc1dfd7fa9",
+        "forced": {
+          "mounting": {
+            "dependency_id": 7,
+            "kind": "constraint",
+            "value": "reinforced"
+          }
+        },
+        "model_id": 1,
+        "selected_components": [
+          "steel-blank",
+          "galvanized-finish",
+          "reinforced-mount"
+        ],
+        "standard_cost_cents": 9100,
+        "unit_price_cents": 16200,
+        "values": {
+          "finish": "galvanized",
+          "material": "steel",
+          "mounting": "reinforced",
+          "quantity": 50
+        },
+        "verdict": "consistent"
+      },
+      "item_id": 1,
+      "line_total_cents": 810000,
+      "qty": 50,
+      "sku": "BRK-100",
+      "standard_cost_cents": 9100,
+      "unit_price_cents": 16200
+    }
+  ],
+  "quote_id": 1,
+  "status": "open",
+  "total_cents": 810000
+}
+[exit 0]
+
+# …and the impossible variant refuses, with its reason:
+
+$ erpcraft evaluate_config --json {"model_id":1,"configuration":{"material":"aluminum","finish":"galvanized"}}
+the configuration is inconsistent: Galvanized finish is available only on steel brackets.
+[exit 1]
+
+# ── Step 3 · The agent invoices — propose, confirm, then it posts ──
+
+$ printf 'y\n' | erpcraft agent "Invoice Acme for the 40 units we shipped Tuesday."
+Invoice Acme for 40 brackets @ $125.00 = $5,000.00
+Shipped Tuesday (2026-10-27)
+- Accounts Receivable +$5,000.00 (Acme owes us)
+- Sales Revenue +$5,000.00
+- Cost of Goods Sold +$2,720.00 (40 × $68.00 standard cost)
+- Finished Goods Inventory -$2,720.00
+Total debits $7,720.00 = total credits $7,720.00 ✓
+[Confirm] [Edit] [Cancel]
+Confirm? [y/N] 
+{
+  "cogs_entry": {
+    "entry_date": "2026-10-31",
+    "id": 3,
+    "lines": [
+      {
+        "account_code": "5000",
+        "credit_cents": 0,
+        "debit_cents": 272000
+      },
+      {
+        "account_code": "1220",
+        "credit_cents": 272000,
+        "debit_cents": 0
+      }
+    ],
+    "memo": "Invoice 1 issued — cost of goods sold",
+    "reverses_entry_id": null,
+    "source": "invoice:1",
+    "status": "posted"
+  },
+  "invoice": {
+    "balance_cents": 500000,
+    "cogs_entry_id": 3,
+    "customer_id": 1,
+    "customer_name": "Acme",
+    "gl_entry_id": 2,
+    "id": 1,
+    "lines": [
+      {
+        "configuration": null,
+        "item_id": 1,
+        "line_total_cents": 500000,
+        "qty": 40,
+        "sku": "BRK-100",
+        "standard_cost_cents": 6800,
+        "unit_price_cents": 12500
+      }
+    ],
+    "order_id": 2,
+    "paid_cents": 0,
+    "status": "issued",
+    "total_cents": 500000
+  },
+  "revenue_entry": {
+    "entry_date": "2026-10-31",
+    "id": 2,
+    "lines": [
+      {
+        "account_code": "1100",
+        "credit_cents": 0,
+        "debit_cents": 500000
+      },
+      {
+        "account_code": "4000",
+        "credit_cents": 500000,
+        "debit_cents": 0
+      }
+    ],
+    "memo": "Invoice 1 issued — revenue",
+    "reverses_entry_id": null,
+    "source": "invoice:1",
+    "status": "posted"
+  }
+}
+[exit 0]
+
+# ── Step 4 · MRP check: a live plan, and the shortage it anticipates ──
+
+$ printf 'y\n' | erpcraft agent "Can we build 200 BRK-100 by 2026-11-15?"
+MRP run as of 2026-10-31 — computed live from open orders, stock, BOMs, and configurations; plans are never stored.
+
+BRK-100: demand 250 by 2026-11-15. Available 50 (on hand 40 + on order 0 + WIP 10) covers 50; the plan builds 200 more, starting 2026-11-10 (due 2026-11-15). On time, if it starts then.
+Components needed: STL-BLANK ×200, FST-SET ×200.
+
+Shortages: none — every planned order can still start on time.
+[exit 0]
+
+$ erpcraft explain_shortage --sku FST-SET --as-of 2026-11-12 --demand-sku BRK-100 --demand-qty 200 --demand-date 2026-11-15
+{
+  "as_of": "2026-11-12",
+  "explanation": "FST-SET is short 110 units: demand is 200 by 2026-11-10, available supply is 90 (on hand 90 + on order 0 + WIP 0), so a purchase order for 110 must start 2026-11-07 — 5 day(s) before this plan's as-of date 2026-11-12.",
+  "netting": {
+    "available": 90,
+    "gross_required": 200,
+    "item_id": 5,
+    "net_required": 110,
+    "on_hand": 90,
+    "on_order": 0,
+    "reasons": [
+      {
+        "covered_by_plan": 110,
+        "covered_by_stock": 90,
+        "origin": "planned production of BRK-100 ×200 (what-if demand: 200 × BRK-100 by 2026-11-15)",
+        "qty": 200
+      }
+    ],
+    "sku": "FST-SET",
+    "wip": 0
+  },
+  "planned_order": {
+    "components": [],
+    "days_late": 5,
+    "due_date": "2026-11-10",
+    "gross_required": 200,
+    "item_id": 5,
+    "key": "purchase:FST-SET:2026-11-10:110",
+    "kind": "purchase",
+    "net_required": 110,
+    "on_hand": 90,
+    "on_order": 0,
+    "qty": 110,
+    "reasons": [
+      {
+        "covered_by_plan": 110,
+        "covered_by_stock": 90,
+        "origin": "planned production of BRK-100 ×200 (what-if demand: 200 × BRK-100 by 2026-11-15)",
+        "qty": 200
+      }
+    ],
+    "sku": "FST-SET",
+    "start_date": "2026-11-07",
+    "wip": 0
+  },
+  "shortage": true,
+  "sku": "FST-SET"
+}
+[exit 0]
+
+# ── Step 5 · Gated release: creates the purchase-order document, moves no money ──
+
+$ erpcraft trial_balance | totals   (before release)
+  "total_credit_cents": 12550000,
+  "total_debit_cents": 12550000
+
+$ printf 'y\n' | erpcraft agent "Release purchase:FST-SET:2026-11-10:110 from the 200 BRK-100 by 2026-11-15 plan."
+Release planned purchase order — FST-SET ×110
+Item: FST-SET — Fastener set
+Due: 2026-11-10 · Start: 2026-11-07
+Netting: gross 200 − available 90 (on hand 90 + on order 0 + WIP 0) = 110 to buy
+Why:
+- planned production of BRK-100 ×200 (what-if demand: 200 × BRK-100 by 2026-11-15) — 110 by this plan (90 covered by stock)
+Releasing creates the purchase order document and counts these units as on-order supply in the next MRP run. No journal entry posts — value moves only when real events happen.
+Confirm? [y/N] 
+{
+  "document_id": 2,
+  "due_date": "2026-11-10",
+  "kind": "purchase",
+  "note": "Released as purchase order #2: 110 × FST-SET is now counted as on-order supply, so the next MRP run sees it. No journal entry posts on release — value moves when the supplier is paid (pay_supplier).",
+  "qty": 110,
+  "sku": "FST-SET",
+  "start_date": "2026-11-07",
+  "status": "open"
+}
+[exit 0]
+
+$ erpcraft trial_balance | totals   (after release — unchanged: planning never posts)
+  "total_credit_cents": 12550000,
+  "total_debit_cents": 12550000
+
+# ── Step 6 · Audit trail: who posted it, why, and the verbatim prompt ──
+
+$ erpcraft agent --yes Buy $3,600 of raw materials on credit.
+Buy $3,600.00 of raw materials on credit
+Date: 2026-10-31
+- Raw Materials Inventory +$3,600.00
+- Accounts Payable +$3,600.00
+Total debits $3,600.00 = total credits $3,600.00 ✓
+[Confirm] [Edit] [Cancel]
+(--yes given — posting.)
+{
+  "entry_date": "2026-10-31",
+  "id": 4,
+  "lines": [
+    {
+      "account_code": "1200",
+      "credit_cents": 0,
+      "debit_cents": 360000
+    },
+    {
+      "account_code": "2000",
+      "credit_cents": 360000,
+      "debit_cents": 0
+    }
+  ],
+  "memo": "Buy materials on credit — prompt: \"Buy $3,600 of raw materials on credit.\"",
+  "reverses_entry_id": null,
+  "source": "agent",
+  "status": "posted"
+}
+[exit 0]
+
+$ erpcraft audit_trail --source agent
+[
+  {
+    "chain": [],
+    "document": null,
+    "entry": {
+      "entry_date": "2026-10-31",
+      "id": 4,
+      "lines": [
+        {
+          "account_code": "1200",
+          "credit_cents": 0,
+          "debit_cents": 360000
+        },
+        {
+          "account_code": "2000",
+          "credit_cents": 360000,
+          "debit_cents": 0
+        }
+      ],
+      "memo": "Buy materials on credit — prompt: \"Buy $3,600 of raw materials on credit.\"",
+      "reverses_entry_id": null,
+      "source": "agent",
+      "status": "posted"
+    },
+    "prompt": "Buy $3,600 of raw materials on credit.",
+    "reversed_by": [],
+    "role": "manual",
+    "summary": "Posted by the NL agent after a human confirmed the proposal. Prompt: \"Buy $3,600 of raw materials on credit.\"",
+    "who": "NL agent (human-confirmed)"
+  }
+]
+[exit 0]
+
+# …and the provenance chain of the invoice's revenue entry from step 3:
+
+$ erpcraft audit_entry 2
+{
+  "chain": [
+    {
+      "entry_ids": [],
+      "id": 2,
+      "kind": "quote",
+      "label": "quote #2 (Acme)"
+    },
+    {
+      "entry_ids": [],
+      "id": 2,
+      "kind": "sales_order",
+      "label": "sales order #2 (Acme)"
+    },
+    {
+      "entry_ids": [
+        2,
+        3
+      ],
+      "id": 1,
+      "kind": "invoice",
+      "label": "invoice #1 (Acme)"
+    }
+  ],
+  "document": {
+    "id": 1,
+    "kind": "invoice",
+    "label": "invoice #1 (Acme)"
+  },
+  "entry": {
+    "entry_date": "2026-10-31",
+    "id": 2,
+    "lines": [
+      {
+        "account_code": "1100",
+        "credit_cents": 0,
+        "debit_cents": 500000
+      },
+      {
+        "account_code": "4000",
+        "credit_cents": 500000,
+        "debit_cents": 0
+      }
+    ],
+    "memo": "Invoice 1 issued — revenue",
+    "reverses_entry_id": null,
+    "source": "invoice:1",
+    "status": "posted"
+  },
+  "prompt": null,
+  "reversed_by": [],
+  "role": "revenue",
+  "summary": "Sales revenue for invoice #1 (Acme) — posted by the posting engine when the invoice was issued.",
+  "who": "posting engine"
+}
+[exit 0]
+
+# End of demo. Final books:
+
+$ erpcraft trial_balance
+{
+  "rows": [
+    {
+      "account_type": "asset",
+      "code": "1000",
+      "credit_cents": 0,
+      "debit_cents": 4820000,
+      "name": "Cash"
+    },
+    {
+      "account_type": "asset",
+      "code": "1100",
+      "credit_cents": 0,
+      "debit_cents": 1740000,
+      "name": "Accounts Receivable"
+    },
+    {
+      "account_type": "asset",
+      "code": "1120",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Prepaid Insurance"
+    },
+    {
+      "account_type": "asset",
+      "code": "1200",
+      "credit_cents": 0,
+      "debit_cents": 1220000,
+      "name": "Raw Materials Inventory"
+    },
+    {
+      "account_type": "asset",
+      "code": "1210",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Work in Process (WIP)"
+    },
+    {
+      "account_type": "asset",
+      "code": "1220",
+      "credit_cents": 0,
+      "debit_cents": 658000,
+      "name": "Finished Goods Inventory"
+    },
+    {
+      "account_type": "asset",
+      "code": "1300",
+      "credit_cents": 0,
+      "debit_cents": 4200000,
+      "name": "Equipment"
+    },
+    {
+      "account_type": "contra_asset",
+      "code": "1310",
+      "credit_cents": 680000,
+      "debit_cents": 0,
+      "name": "Accumulated Depreciation — Equipment"
+    },
+    {
+      "account_type": "liability",
+      "code": "2000",
+      "credit_cents": 1330000,
+      "debit_cents": 0,
+      "name": "Accounts Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2100",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Sales Tax Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2200",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Customer Deposits"
+    },
+    {
+      "account_type": "liability",
+      "code": "2300",
+      "credit_cents": 2500000,
+      "debit_cents": 0,
+      "name": "Loan Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2400",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Wages Payable"
+    },
+    {
+      "account_type": "equity",
+      "code": "3000",
+      "credit_cents": 6500000,
+      "debit_cents": 0,
+      "name": "Owner's Equity"
+    },
+    {
+      "account_type": "equity",
+      "code": "3100",
+      "credit_cents": 1400000,
+      "debit_cents": 0,
+      "name": "Retained Earnings"
+    },
+    {
+      "account_type": "revenue",
+      "code": "4000",
+      "credit_cents": 500000,
+      "debit_cents": 0,
+      "name": "Sales Revenue"
+    },
+    {
+      "account_type": "contra_revenue",
+      "code": "4010",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Sales Returns"
+    },
+    {
+      "account_type": "expense",
+      "code": "5000",
+      "credit_cents": 0,
+      "debit_cents": 272000,
+      "name": "Cost of Goods Sold"
+    },
+    {
+      "account_type": "expense",
+      "code": "6000",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Rent Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6010",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Interest Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6020",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Depreciation Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6030",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Supplies Expense"
+    }
+  ],
+  "total_credit_cents": 12910000,
+  "total_debit_cents": 12910000
+}
+[exit 0]

@@ -245,3 +245,191 @@ fn configurator_authoring_round_trip() {
     assert_eq!(evaluation["verdict"]["status"], "consistent");
     assert_eq!(evaluation["selected_components"], json!([]));
 }
+
+#[test]
+fn procure_to_pay_dispatches_end_to_end() {
+    // The P2P table through the same dispatch the CLI/MCP/agent
+    // doors share: supplier → requisition → PO → receipt → AP
+    // invoice (price variance → hold) → override → payment.
+    // This door opened with plain open_db, so no door seed ran:
+    // the supplier is created here, and the posting transitions
+    // ensure the GR-IR/PPV accounts themselves.
+    let mut conn = open_db(":memory:").unwrap();
+
+    let supplier = d(
+        &mut conn,
+        "create_supplier",
+        json!({ "name": "Harbor Components" }),
+    );
+    let supplier_id = supplier["id"].as_i64().unwrap();
+    assert_eq!(
+        d(&mut conn, "list_suppliers", json!({}))
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // BRK-100 (item 1) is the only catalog item on a fresh database.
+    let req = d(
+        &mut conn,
+        "create_requisition",
+        json!({
+            "supplier_id": supplier_id,
+            "requested_by": "ops",
+            "lines": [{ "item_id": 1, "qty": 10, "unit_price_cents": 6000 }]
+        }),
+    );
+    let req_id = req["id"].as_i64().unwrap();
+    assert_eq!(req["status"], "draft");
+    assert_eq!(
+        d(&mut conn, "list_requisitions", json!({}))
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let approved = d(
+        &mut conn,
+        "approve_requisition",
+        json!({ "requisition_id": req_id }),
+    );
+    assert_eq!(approved["status"], "approved");
+
+    let order = d(
+        &mut conn,
+        "create_purchase_order",
+        json!({ "requisition_id": req_id }),
+    );
+    let po_id = order["id"].as_i64().unwrap();
+    let po_line_id = order["lines"][0]["id"].as_i64().unwrap();
+    assert_eq!(order["total_cents"], 60_000);
+    assert_eq!(
+        d(
+            &mut conn,
+            "get_requisition",
+            json!({ "requisition_id": req_id })
+        )["status"],
+        "converted"
+    );
+    assert_eq!(
+        d(&mut conn, "list_procurement_orders", json!({}))
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        d(
+            &mut conn,
+            "get_procurement_order",
+            json!({ "order_id": po_id })
+        )["status"],
+        "open"
+    );
+
+    // Receipt posts Dr 1200 / Cr 2050 at the PO price ($600.00).
+    let received = d(
+        &mut conn,
+        "receive_goods",
+        json!({
+            "order_id": po_id,
+            "lines": [{ "po_line_id": po_line_id, "qty": 10 }]
+        }),
+    );
+    let entry_lines = received["entry"]["lines"].as_array().unwrap();
+    assert!(entry_lines
+        .iter()
+        .any(|l| l["account_code"] == "1200" && l["debit_cents"] == 60_000));
+    assert!(entry_lines
+        .iter()
+        .any(|l| l["account_code"] == "2050" && l["credit_cents"] == 60_000));
+    assert_eq!(
+        d(
+            &mut conn,
+            "list_goods_receipts",
+            json!({ "order_id": po_id })
+        )
+        .as_array()
+        .unwrap()
+        .len(),
+        1
+    );
+
+    // Invoice $5.00/unit over the PO price: recorded, on hold.
+    let invoiced = d(
+        &mut conn,
+        "record_ap_invoice",
+        json!({
+            "order_id": po_id,
+            "lines": [{ "po_line_id": po_line_id, "qty": 10, "unit_price_cents": 6500 }]
+        }),
+    );
+    let ap_id = invoiced["ap_invoice"]["id"].as_i64().unwrap();
+    assert_eq!(invoiced["ap_invoice"]["status"], "on_hold");
+    assert_eq!(invoiced["ap_invoice"]["variances"][0]["kind"], "price");
+
+    // Payment refuses while the hold stands.
+    let refused = dispatch(
+        &mut conn,
+        Door::Cli,
+        "pay_ap_invoice",
+        &json!({ "ap_invoice_id": ap_id, "amount_cents": 65_000 }),
+    );
+    assert!(refused.is_err(), "an on-hold invoice must not pay");
+
+    // Override with a recorded reason releases it; payment posts.
+    let overridden = d(
+        &mut conn,
+        "override_ap_match",
+        json!({
+            "ap_invoice_id": ap_id,
+            "reason": "Price increase agreed by email 2026-10-30",
+            "by": "pat"
+        }),
+    );
+    assert_eq!(overridden["match_status"], "overridden");
+    assert_eq!(overridden["overridden_by"], "pat");
+
+    let paid = d(
+        &mut conn,
+        "pay_ap_invoice",
+        json!({ "ap_invoice_id": ap_id, "amount_cents": 65_000 }),
+    );
+    assert_eq!(paid["payment"]["amount_cents"], 65_000);
+    assert_eq!(
+        d(
+            &mut conn,
+            "get_ap_invoice",
+            json!({ "ap_invoice_id": ap_id })
+        )["status"],
+        "paid"
+    );
+    assert_eq!(
+        d(&mut conn, "list_ap_invoices", json!({}))
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        d(
+            &mut conn,
+            "list_ap_payments",
+            json!({ "ap_invoice_id": ap_id })
+        )
+        .as_array()
+        .unwrap()
+        .len(),
+        1
+    );
+
+    // GR-IR cleared across the cycle: the trial balance shows 2050
+    // back at zero and 6040 holding the $50.00 price variance.
+    let tb = d(&mut conn, "trial_balance", json!({}));
+    let rows = tb["rows"].as_array().unwrap();
+    let grir = rows.iter().find(|r| r["code"] == "2050").unwrap();
+    assert_eq!(grir["debit_cents"], grir["credit_cents"]);
+    let ppv = rows.iter().find(|r| r["code"] == "6040").unwrap();
+    assert_eq!(ppv["debit_cents"], 5_000);
+}

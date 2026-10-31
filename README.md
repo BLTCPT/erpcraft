@@ -121,15 +121,19 @@ export ERPCRAFT_DB=/tmp/demo.db; rm -f $ERPCRAFT_DB
 E="cargo run -p erpcraft-cli --"
 ```
 
-1. **Seed + health.** `$E health` — Cascade Precision Parts, opening
-   trial balance $120,500.00 per side, MRP scenario seeded (BRK-100
-   BOM, stock, lead times).
+1. **Seed + health.** `$E health` — Cascade Precision Parts is
+   seeded (22 accounts, 4 customers, and the MRP scenario: BRK-100
+   BOM, stock, lead times). `$E trial_balance` — the opening books
+   balance at $120,500.00 per side.
 2. **Configured quote.** A BRK-100 in steel with a galvanized finish:
-   the configurator forces the reinforced mount (a named constraint),
-   explains why aluminum + galvanized is refused, and rolls the
-   selected components into the line price — $162.00/unit:
+   the configurator forces the reinforced mount (a named constraint)
+   and rolls the selected components into the line price —
+   $162.00/unit:
    `$E create_quote --json '{"customer_id":1,"lines":[{"item_id":1,"qty":50,"configuration":{"material":"steel","finish":"galvanized"}}]}'`
    then `$E send_quote 1`, `$E accept_quote 1`, `$E create_order 1`.
+   Ask for the impossible variant and it refuses, with its reason:
+   `$E evaluate_config --json '{"model_id":1,"configuration":{"material":"aluminum","finish":"galvanized"}}'`
+   — "Galvanized finish is available only on steel brackets."
 3. **Agent invoice.** `$E agent "Invoice Acme for the 40 units we
    shipped Tuesday."` — the agent proposes; the confirmation shows
    the $5,000.00 posting rendered from the ledger (debits = credits
@@ -139,11 +143,13 @@ E="cargo run -p erpcraft-cli --"
    2026-11-15?"` — a live plan, computed on the spot from current
    state: total demand is 250 (the open order from step 2 plus your
    200), 50 are covered, so the plan builds 200 more starting
-   Nov 10, and plans a fastener purchase of 110. Run `$E
-   explain_shortage --sku FST-SET --as-of 2026-11-12 --demand-sku
-   BRK-100 --demand-qty 200 --demand-date 2026-11-15` to see the
-   same order become a *shortage* once its start date passes —
-   anticipation, not a stored report.
+   Nov 10. The full plan (`$E run_mrp --demand-sku BRK-100
+   --demand-qty 200 --demand-date 2026-11-15`) also nets the
+   components: purchases of 30 steel blanks and 110 fastener sets.
+   Run `$E explain_shortage --sku FST-SET --as-of 2026-11-12
+   --demand-sku BRK-100 --demand-qty 200 --demand-date 2026-11-15`
+   to see the fastener order become a *shortage* once its start
+   date (Nov 7) has passed — anticipation, not a stored report.
 5. **Gated release.** `$E agent "Release purchase:FST-SET:2026-11-10:110
    from the 200 BRK-100 by 2026-11-15 plan."` — propose → confirm
    creates the purchase-order *document* and counts the units as

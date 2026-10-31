@@ -61,6 +61,11 @@ fn run(name: &str, tokens: &[String]) -> ExitCode {
         eprintln!("unknown command '{name}' — run 'erpcraft help' to list the commands");
         return ExitCode::from(1);
     };
+    if tokens.iter().any(|t| t == "--help" || t == "-h") {
+        println!("usage: {}", spec.usage);
+        println!("{}", spec.summary);
+        return ExitCode::SUCCESS;
+    }
     let args = match parse_cli_args(&spec, tokens) {
         Ok(args) => args,
         Err(message) => {
@@ -97,11 +102,21 @@ fn run(name: &str, tokens: &[String]) -> ExitCode {
 
 /// A refusal in plain language: the core's message, then each of the
 /// configurator's structured explanations rendered as a reason line —
-/// the same detail the JSON surfaces carry, in terminal form.
+/// the same detail the JSON surfaces carry, in terminal form. Each
+/// distinct reason prints once: the message line often already
+/// carries the first explanation's detail (evaluate_config's
+/// contract), and one dependency can explain several values with the
+/// same sentence.
 fn report_error(e: &DispatchError) {
     eprintln!("{}", e.message);
+    let mut seen: Vec<&str> = Vec::new();
     for explanation in &e.explanations {
-        eprintln!("  - {}", explanation.message_parts.detail);
+        let detail = explanation.message_parts.detail.as_str();
+        if e.message.contains(detail) || seen.contains(&detail) {
+            continue;
+        }
+        seen.push(detail);
+        eprintln!("  - {detail}");
     }
 }
 
@@ -197,6 +212,16 @@ fn parse_scalar(raw: &str) -> Value {
 /// routes fall back to the recorded fixture when one is configured
 /// and the API does not answer (spec test 12).
 fn run_agent(tokens: &[String]) -> ExitCode {
+    if tokens.iter().any(|t| t == "--help" || t == "-h") {
+        println!(
+            "usage: erpcraft agent [--client stub|recorded|baseten|meta] [--fixture <path>] [--yes] \"<prompt>\""
+        );
+        println!(
+            "The natural-language agent: turns a plain-English prompt into proposed dispatch calls, \
+             renders the confirmation from ledger data, and posts only after a human confirms."
+        );
+        return ExitCode::SUCCESS;
+    }
     let mut client_kind = "stub".to_string();
     let mut fixture: Option<String> = std::env::var("ERPCRAFT_AGENT_FIXTURE").ok();
     let mut auto_yes = false;
@@ -377,10 +402,15 @@ fn confirm_and_post(
         print!("Confirm? [y/N] ");
         let _ = std::io::stdout().flush();
         let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
+        let answered = match std::io::stdin().read_line(&mut line) {
             Ok(_) => matches!(line.trim().to_lowercase().as_str(), "y" | "yes"),
             Err(_) => false,
-        }
+        };
+        // Terminate the prompt line. At a terminal the human's Enter
+        // does this; with piped stdin nothing would, and the result
+        // JSON (or the cancel message) would start on the prompt line.
+        println!();
+        answered
     };
     if !confirmed {
         println!("{}", proposal.cancel_message());

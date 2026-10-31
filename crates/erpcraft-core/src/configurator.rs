@@ -920,6 +920,17 @@ pub fn evaluate(model: &ConfigModelView, input: &BTreeMap<String, ConfigValue>) 
 
     // Selectable space under the final assignments, plus the
     // completeness / dead-end analysis.
+    //
+    // Dead-end explanations are emitted only when the assignments so
+    // far are otherwise consistent. If an earlier phase already found
+    // a conflict, every remaining characteristic trivially has no
+    // completable value — any candidate keeps the broken assignment —
+    // and reporting each one as a dead end blames unrelated
+    // dependencies for the same conflict: noise on top of the real
+    // explanation (an aluminum + galvanized rejection used to repeat
+    // the galvanized precondition three times, once as the conflict
+    // and twice as spurious "dead ends" for mounting).
+    let explain_dead_ends = !inconsistent;
     let mut selectable: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut missing: Vec<String> = Vec::new();
     for ch in &model.characteristics {
@@ -949,23 +960,25 @@ pub fn evaluate(model: &ConfigModelView, input: &BTreeMap<String, ConfigValue>) 
         if allowed.is_empty() {
             // Dead end: every value was eliminated by some dependency.
             inconsistent = true;
-            for (value, dep_id) in &eliminated {
-                let dep = model
-                    .dependencies
-                    .iter()
-                    .find(|d| d.id == *dep_id)
-                    .expect("eliminating dependency exists in the model");
-                explanations.push(explanation(
-                    dep,
-                    vec![ch.code.clone()],
-                    vec![format!("{}={}", ch.code, value.render())],
-                    format!(
-                        "no value of '{}' remains available: {}={} was eliminated by this dependency",
-                        ch.code,
-                        ch.code,
-                        value.render()
-                    ),
-                ));
+            if explain_dead_ends {
+                for (value, dep_id) in &eliminated {
+                    let dep = model
+                        .dependencies
+                        .iter()
+                        .find(|d| d.id == *dep_id)
+                        .expect("eliminating dependency exists in the model");
+                    explanations.push(explanation(
+                        dep,
+                        vec![ch.code.clone()],
+                        vec![format!("{}={}", ch.code, value.render())],
+                        format!(
+                            "no value of '{}' remains available: {}={} was eliminated by this dependency",
+                            ch.code,
+                            ch.code,
+                            value.render()
+                        ),
+                    ));
+                }
             }
         } else if ch.required {
             missing.push(ch.code.clone());

@@ -80,8 +80,12 @@ fn help_lists_the_whole_command_table() {
         "account_ledger",
         "accept_quote",
         "add_characteristic",
+        "approve_requisition",
         "buy_materials",
         "cancel_order",
+        "cancel_purchase_order",
+        "cancel_requisition",
+        "close_fiscal_period",
         "audit_entry",
         "add_bom_line",
         "audit_trail",
@@ -92,38 +96,59 @@ fn help_lists_the_whole_command_table() {
         "create_dependency",
         "create_invoice",
         "create_order",
+        "create_fiscal_period",
+        "create_purchase_order",
         "create_quote",
+        "create_requisition",
+        "create_supplier",
+        "create_user",
         "decline_quote",
         "evaluate_config",
         "explain_shortage",
         "expire_quote",
         "fulfil_order",
+        "get_ap_invoice",
         "get_config_model",
         "get_entry",
         "get_invoice",
         "get_order",
+        "get_procurement_order",
         "get_quote",
+        "get_requisition",
         "health",
         "issue_invoice",
         "issue_materials",
+        "list_ap_invoices",
+        "list_ap_payments",
         "list_bom",
+        "list_control_settings",
         "list_config_models",
         "list_customers",
         "list_entries",
+        "list_fiscal_periods",
+        "list_goods_receipts",
         "list_invoices",
         "list_items",
         "list_orders",
+        "list_procurement_orders",
         "list_purchase_orders",
         "list_production_orders",
         "list_payments",
         "list_planned_orders",
         "list_payments_for_invoice",
+        "list_requisitions",
         "list_stock",
+        "list_suppliers",
+        "list_users",
         "list_quotes",
+        "override_ap_match",
+        "pay_ap_invoice",
         "pay_supplier",
         "post_entry",
+        "receive_goods",
         "release_planned_order",
         "receive_purchase_order",
+        "record_ap_invoice",
         "record_deposit",
         "record_depreciation",
         "record_interest",
@@ -132,6 +157,8 @@ fn help_lists_the_whole_command_table() {
         "record_rent",
         "run_mrp",
         "record_return",
+        "reject_requisition",
+        "set_approval_threshold",
         "set_stock",
         "send_quote",
         "trial_balance",
@@ -171,7 +198,9 @@ fn health_on_a_fresh_database() {
     let (health, out) = run_json(&db, &["health"]);
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(health["status"], "ok");
-    assert_eq!(health["accounts"], 22);
+    // 22 Day-1 chart accounts + the two procure-to-pay accounts
+    // (2050 GR-IR, 6040 PPV) the doors seed alongside the MRP demo.
+    assert_eq!(health["accounts"], 24);
     assert_eq!(health["journal_entries"], 1, "the opening entry only");
     assert_eq!(health["config_models"], 1, "the BRK-100 demo model");
 }
@@ -313,4 +342,40 @@ fn configurator_refusals_carry_the_explanations_on_stderr() {
     );
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(evaluation["verdict"]["status"], "incomplete");
+}
+
+#[test]
+fn refusal_reasons_print_once_and_commands_answer_help() {
+    let db = temp_db("refusal-dedupe");
+
+    // The aluminum + galvanized refusal names its reason exactly
+    // once on stderr: the headline carries the first explanation's
+    // detail, and the evaluator no longer repeats the same
+    // dependency as spurious "dead ends" for other characteristics.
+    let out = run(
+        &db,
+        &[
+            "evaluate_config",
+            "--json",
+            r#"{"model_id": 1, "configuration": {"material": "aluminum", "finish": "galvanized"}}"#,
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert_eq!(
+        err.matches("Galvanized finish is available only on steel brackets.")
+            .count(),
+        1,
+        "the reason prints exactly once: {err}"
+    );
+
+    // A command asked for help answers with its usage, exit 0 —
+    // not a "--help needs a value after it" complaint.
+    let out = run(&db, &["evaluate_config", "--help"]);
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("usage: erpcraft evaluate_config"),
+        "stdout: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }

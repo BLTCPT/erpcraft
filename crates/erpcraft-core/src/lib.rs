@@ -27,7 +27,15 @@ pub use rusqlite;
 
 pub mod audit;
 pub mod configurator;
+pub mod controls;
 pub mod mrp;
+pub mod procurement;
+
+pub use controls::{
+    approval_threshold, close_fiscal_period, create_fiscal_period, create_user,
+    list_control_settings, list_fiscal_periods, list_users, set_approval_threshold,
+    ControlSettingView, FiscalPeriodView, UserView,
+};
 
 pub use audit::{
     agent_prompt, audit_entry, audit_trail, AuditChainNode, AuditDocRef, AuditFilter, AuditRecord,
@@ -38,6 +46,19 @@ pub use mrp::{
     seed_mrp_demo_if_empty, set_item_planning, set_stock, BomLineView, DemandReason, ItemNetting,
     MrpDemand, MrpPlan, PlannedComponent, PlannedOrder, ProductionOrderView, PurchaseOrderView,
     ReleaseOutcome, StockLevelView,
+};
+
+pub use procurement::{
+    ap_invoice_count, approve_requisition, cancel_purchase_order, cancel_requisition,
+    create_purchase_order, create_requisition, create_supplier, get_ap_invoice,
+    get_procurement_order, get_requisition, list_ap_invoices, list_ap_payments,
+    list_ap_payments_for_invoice, list_goods_receipts, list_procurement_orders, list_requisitions,
+    list_suppliers, override_ap_match, pay_ap_invoice, pay_ap_invoice_attributed, receive_goods,
+    record_ap_invoice, reject_requisition, seed_procurement_if_empty, supplier_count,
+    ApInvoiceLineView, ApInvoiceView, ApLineInput, ApPaymentView, GoodsReceiptLineView,
+    GoodsReceiptView, MatchVariance, NewApInvoice, NewProcurementOrder, NewRequisition,
+    ProcLineInput, ProcOrderLineView, ProcOrderView, ReceiveLineInput, ReqLineInput, ReqLineView,
+    RequisitionView, SupplierView, ACCT_GRIR, ACCT_PPV,
 };
 
 pub use configurator::{
@@ -495,6 +516,134 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
                CHECK (status IN ('open','received','cancelled')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ---------------------------------------------------------------------------
+-- Procure-to-pay (ENTERPRISE_GAPS.md §3; module `procurement`). The
+-- supplier-facing document chain: requisition → procurement order →
+-- goods receipt → AP invoice (three-way match) → AP payment. These
+-- tables are deliberately distinct from MRP's planning
+-- `purchase_orders` above: a planning order is a quantity intention,
+-- a procurement order is a commercial commitment to a supplier.
+-- The GR-IR clearing account (2050) and the purchase-price-variance
+-- account (6040) are seeded by `seed_procurement_if_empty`, NOT by
+-- the Day-1 chart seed — the seeded 22-account chart is a frozen
+-- test surface (the oracle suite pins its rows per account).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS suppliers (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS purchase_requisitions (
+    id           INTEGER PRIMARY KEY,
+    supplier_id  INTEGER REFERENCES suppliers(id),
+    requested_by TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'draft'
+                 CHECK (status IN ('draft','approved','rejected','converted','cancelled')),
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS purchase_requisition_lines (
+    id               INTEGER PRIMARY KEY,
+    requisition_id   INTEGER NOT NULL REFERENCES purchase_requisitions(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS procurement_orders (
+    id             INTEGER PRIMARY KEY,
+    supplier_id    INTEGER NOT NULL REFERENCES suppliers(id),
+    requisition_id INTEGER REFERENCES purchase_requisitions(id),
+    status         TEXT NOT NULL DEFAULT 'open'
+                   CHECK (status IN ('open','partially_received','received','cancelled')),
+    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS procurement_lines (
+    id               INTEGER PRIMARY KEY,
+    po_id            INTEGER NOT NULL REFERENCES procurement_orders(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+    qty_received     INTEGER NOT NULL DEFAULT 0 CHECK (qty_received >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS goods_receipts (
+    id          INTEGER PRIMARY KEY,
+    po_id       INTEGER NOT NULL REFERENCES procurement_orders(id),
+    gl_entry_id INTEGER REFERENCES journal_entries(id),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS goods_receipt_lines (
+    id          INTEGER PRIMARY KEY,
+    receipt_id  INTEGER NOT NULL REFERENCES goods_receipts(id),
+    po_line_id  INTEGER NOT NULL REFERENCES procurement_lines(id),
+    item_id     INTEGER NOT NULL REFERENCES items(id),
+    qty         INTEGER NOT NULL CHECK (qty > 0)
+);
+
+CREATE TABLE IF NOT EXISTS ap_invoices (
+    id              INTEGER PRIMARY KEY,
+    po_id           INTEGER NOT NULL REFERENCES procurement_orders(id),
+    supplier_id     INTEGER NOT NULL REFERENCES suppliers(id),
+    status          TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open','on_hold','partially_paid','paid')),
+    match_status    TEXT NOT NULL DEFAULT 'matched'
+                    CHECK (match_status IN ('matched','variance','overridden')),
+    override_reason TEXT,
+    overridden_by   TEXT,
+    gl_entry_id     INTEGER REFERENCES journal_entries(id),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ap_invoice_lines (
+    id               INTEGER PRIMARY KEY,
+    ap_invoice_id    INTEGER NOT NULL REFERENCES ap_invoices(id),
+    po_line_id       INTEGER NOT NULL REFERENCES procurement_lines(id),
+    item_id          INTEGER NOT NULL REFERENCES items(id),
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS ap_payments (
+    id            INTEGER PRIMARY KEY,
+    ap_invoice_id INTEGER NOT NULL REFERENCES ap_invoices(id),
+    amount_cents  INTEGER NOT NULL CHECK (amount_cents > 0),
+    status        TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded')),
+    gl_entry_id   INTEGER REFERENCES journal_entries(id),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Controls foundations (ENTERPRISE_GAPS.md §6/§7; module `controls`).
+-- Fiscal periods gate postings by entry date once closed; users and
+-- control_settings carry the payment approval rule. All additive:
+-- no table here is seeded, so a fresh database behaves exactly as
+-- before until a door defines periods, users, or a threshold.
+CREATE TABLE IF NOT EXISTS fiscal_periods (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    start_date TEXT NOT NULL,
+    end_date   TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    role       TEXT NOT NULL CHECK (role IN ('admin','approver','clerk')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS control_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -577,6 +726,10 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "invoices", "gl_entry_id", "INTEGER")?;
     ensure_column(conn, "invoices", "cogs_entry_id", "INTEGER")?;
     ensure_column(conn, "payments", "gl_entry_id", "INTEGER")?;
+    // Controls foundations: the recorded approver on payment rows,
+    // for databases created before the approval rule existed.
+    ensure_column(conn, "payments", "approved_by", "TEXT")?;
+    ensure_column(conn, "ap_payments", "approved_by", "TEXT")?;
     // MRP planning attributes on items (MRP_DESIGN.md).
     ensure_column(
         conn,
@@ -664,7 +817,18 @@ pub fn post_entry(conn: &mut Connection, new: &NewEntry) -> Result<i64> {
 /// inside the same transaction as the document transition it belongs to,
 /// so a posting failure rolls the transition back with it. The database
 /// triggers remain the enforcer; this function never bypasses them.
-fn post_entry_in(tx: &Transaction, new: &NewEntry) -> Result<i64> {
+///
+/// Controls gate (ENTERPRISE_GAPS.md §6): an entry dated inside a
+/// *closed* fiscal period is refused here, which covers every door
+/// and every document transition at once. With no periods defined —
+/// the frozen demo default — nothing is gated.
+pub(crate) fn post_entry_in(tx: &Transaction, new: &NewEntry) -> Result<i64> {
+    if let Some(period) = crate::controls::closed_period_for(tx, &new.entry_date)? {
+        return Err(LedgerError::Invalid(format!(
+            "cannot post an entry dated {}: fiscal period '{period}' is closed",
+            new.entry_date
+        )));
+    }
     if new.lines.len() < 2 {
         return Err(LedgerError::Invalid(
             "a journal entry needs at least two lines".to_string(),
@@ -1031,6 +1195,9 @@ pub struct PaymentView {
     pub status: String,
     /// Day-3 double-post guard: the cash entry posted with this payment.
     pub gl_entry_id: Option<i64>,
+    /// The second approver when the payment approval rule fired
+    /// (controls.rs); `None` for ordinary payments.
+    pub approved_by: Option<String>,
 }
 
 /// One line of a sales return: which invoiced item and how many units
@@ -1965,6 +2132,22 @@ pub fn void_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
 /// id is stored on the payment (`gl_entry_id`) as its double-post guard.
 /// A refused payment (draft invoice, overpayment) posts nothing.
 pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cents) -> Result<i64> {
+    record_payment_attributed(conn, invoice_id, amount_cents, None, None)
+}
+
+/// [`record_payment`] with actor attribution for the controls
+/// approval rule (controls.rs): when a threshold is set and this
+/// payment exceeds it, `actor` and a different `approver` (role
+/// approver/admin) are required; the approver is recorded on the
+/// payment row and in the posted entry's memo. With no threshold
+/// set, attribution is accepted and ignored.
+pub fn record_payment_attributed(
+    conn: &mut Connection,
+    invoice_id: i64,
+    amount_cents: Cents,
+    actor: Option<&str>,
+    approver: Option<&str>,
+) -> Result<i64> {
     if amount_cents <= 0 {
         return Err(LedgerError::Invalid(
             "a payment amount must be positive".to_string(),
@@ -2001,10 +2184,15 @@ pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cent
              it totals {total_cents} cents with {paid_cents} cents already paid"
         )));
     }
+    // Segregation of duties: above the configured threshold this
+    // payment needs a second approver (controls.rs). Checked before
+    // anything is written, inside the same transaction.
+    let approved_by =
+        crate::controls::check_payment_approval(&tx, amount_cents, actor, approver, "payment")?;
     tx.execute(
-        "INSERT INTO payments (invoice_id, amount_cents, status)
-         VALUES (?1, ?2, 'recorded')",
-        params![invoice_id, amount_cents],
+        "INSERT INTO payments (invoice_id, amount_cents, status, approved_by)
+         VALUES (?1, ?2, 'recorded', ?3)",
+        params![invoice_id, amount_cents, approved_by],
     )?;
     let payment_id = tx.last_insert_rowid();
     // The payment's own GL posting, atomic with the payment row.
@@ -2013,11 +2201,17 @@ pub fn record_payment(conn: &mut Connection, invoice_id: i64, amount_cents: Cent
         params![payment_id],
         |r| r.get(0),
     )?;
+    let mut memo = format!("Payment {payment_id} recorded on invoice {invoice_id}");
+    if let Some(name) = &approved_by {
+        // The approver lands on the entry itself — the audit record
+        // an examiner reads first.
+        memo.push_str(&format!(" — approved by {name}"));
+    }
     let gl_entry_id = post_entry_in(
         &tx,
         &two_line_entry(
             &date_part(&created_at),
-            format!("Payment {payment_id} recorded on invoice {invoice_id}"),
+            memo,
             format!("payment:{payment_id}"),
             None,
             ACCT_CASH,
@@ -2189,7 +2383,8 @@ pub fn record_sales_return(
 
 pub fn list_payments(conn: &Connection) -> Result<Vec<PaymentView>> {
     let mut stmt = conn.prepare(
-        "SELECT id, invoice_id, amount_cents, status, gl_entry_id FROM payments ORDER BY id",
+        "SELECT id, invoice_id, amount_cents, status, gl_entry_id, approved_by
+         FROM payments ORDER BY id",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(PaymentView {
@@ -2198,6 +2393,7 @@ pub fn list_payments(conn: &Connection) -> Result<Vec<PaymentView>> {
             amount_cents: row.get(2)?,
             status: row.get(3)?,
             gl_entry_id: row.get(4)?,
+            approved_by: row.get(5)?,
         })
     })?;
     let mut out = Vec::new();
@@ -2210,7 +2406,8 @@ pub fn list_payments(conn: &Connection) -> Result<Vec<PaymentView>> {
 /// Payments recorded against one invoice, oldest first.
 pub fn list_payments_for_invoice(conn: &Connection, invoice_id: i64) -> Result<Vec<PaymentView>> {
     let mut stmt = conn.prepare(
-        "SELECT id, invoice_id, amount_cents, status, gl_entry_id FROM payments
+        "SELECT id, invoice_id, amount_cents, status, gl_entry_id, approved_by
+         FROM payments
          WHERE invoice_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map(params![invoice_id], |row| {
@@ -2220,6 +2417,7 @@ pub fn list_payments_for_invoice(conn: &Connection, invoice_id: i64) -> Result<V
             amount_cents: row.get(2)?,
             status: row.get(3)?,
             gl_entry_id: row.get(4)?,
+            approved_by: row.get(5)?,
         })
     })?;
     let mut out = Vec::new();
