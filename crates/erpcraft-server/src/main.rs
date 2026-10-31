@@ -119,6 +119,9 @@ struct ReceiveGoods {
 #[derive(Deserialize)]
 struct RecordApInvoice {
     lines: Vec<ApLineInput>,
+    /// The supplier's own invoice number — the duplicate key.
+    #[serde(default)]
+    supplier_ref: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -880,6 +883,7 @@ async fn record_ap_invoice_handler(
         &NewApInvoice {
             po_id: id,
             lines: body.lines,
+            supplier_ref: body.supplier_ref.clone(),
         },
     )
     .map_err(bad_request)?;

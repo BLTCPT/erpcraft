@@ -2,9 +2,9 @@
 
 Written Oct 31, 2026, against the build as it stands: double-entry ledger
 core (DB-trigger-enforced), order-to-cash with a GL posting engine, a
-typed SAP LO-VC-style variant configurator, a 58-command CLI + MCP
+typed SAP LO-VC-style variant configurator, an 85-command CLI + MCP
 dispatch table, an NL agent behind a propose→confirm gate, a Day-6
-audit trail, and dynamic MRP on the Warp Speed pattern. 92+ tests,
+audit trail, and dynamic MRP on the Warp Speed pattern. 165 tests,
 single company, single currency, single SQLite node, demo data for one
 fictional precision-parts maker (Cascade Precision Parts).
 
@@ -172,5 +172,213 @@ every command L.
 ## 8. Treasury & bank reconciliation
 
 **Today:** nothing. Cash is account 1000 with a balance; there is no
-bank account model, no statement import,
-...[truncated 8926 chars]
+bank account model, no statement import, no reconciliation workflow —
+a payment is "correct" because the journal says so, never because a
+bank agreed.
+
+**Real:** bank accounts as first-class objects with statement import
+(CAMT.053/BAI2/CSV), automatic matching of statement lines to
+payments and receipts, outstanding-item aging, bank fees and interest
+posted from the statement, and multi-bank cash positioning. At Meta
+and Lam scale this is a dedicated treasury function with payment
+factories and in-house-bank structures on top.
+
+**Gap shape:** additive — a bank-account table, statement lines, and
+a matching engine against payments/receipts; the ledger core is
+untouched. **Size: M.**
+
+## 9. Inventory costing & valuation depth
+
+**Today:** one valuation rule — standard cost, snapshotted onto
+invoice lines at issuance. Quantities live in MRP's `stock_levels`;
+there is no movement history (who moved what, when, against which
+document), no lot/serial tracking, no cycle counting, and receipts
+value at PO price into a single inventory account per make/buy class.
+
+**Real:** moving-average and FIFO layers per item/site, landed-cost
+apportionment (freight, duty), lot and serial traceability for
+regulated parts, consignment and subcontracting stock, cycle-count
+programs with variance posting, and a complete goods-movement ledger
+as the subledger the GL inventory balance must reconcile to.
+
+**Gap shape:** a movement table (the inventory analogue of the
+journal: append-only, document-referenced) plus a costing engine.
+The journal pattern transfers directly; the volume of edge cases is
+the work. **Size: L.**
+
+## 10. Manufacturing depth beyond MRP
+
+**Today:** MRP nets demand and explodes BOMs with low-level codes
+and lead-time offsets; release creates production/purchase orders;
+completion is a value-only builder. No capacity model, no lot
+sizing, no safety stock, no scrap/yield factors, no finite
+scheduling — the design doc names these limits openly. One
+structural wart: procurement's purchase orders are a *second*
+order book, invisible to MRP's supply picture — an item already
+ordered through P2P is planned again by MRP until it is received.
+The two supply models must unify.
+
+**Real:** work-center capacity and finite-capacity scheduling,
+lot-sizing rules (EOQ, period-order quantity), safety-stock
+policies by service level, planned scrap, co-products/by-products,
+and — Lam's world — long-cycle engineer-to-order builds that sit in
+WIP for months with progress billing and milestone recognition.
+
+**Gap shape:** additive planning engines over the same demand and
+BOM data; the netting core (fixed and probe-tested Oct 31) is the
+foundation, not the obstacle. **Size: L per engine.**
+
+## 11. Fixed assets & depreciation
+
+**Today:** a `record_depreciation` builder posts a manual two-line
+entry. There is no asset register, no capitalization workflow, no
+depreciation schedule — the number comes from whoever runs the
+command.
+
+**Real:** an asset subledger (acquisition, transfers, retirements),
+parallel depreciation books (GAAP, tax, local statutory) with
+different lives and methods, capex approval workflows, and automatic
+monthly depreciation runs whose every line traces to an asset.
+
+**Gap shape:** a classic subledger build — register + schedule
+engine + run posting through the one posting path. **Size: M.**
+
+## 12. Payroll & people costs
+
+**Today:** nothing — direct labor is a manual journal builder
+(`record_labor`) fed by a number from outside the system.
+
+**Real:** payroll is usually a specialized system (Workday/ADP) even
+at companies that build everything else, because the rules are
+jurisdictional and change constantly: withholdings, benefits,
+equity compensation, multi-country payroll. What the ERP must own
+is the *posting interface*: labor distributions into cost centers
+and WIP, accruals, and reconciliation to the payroll provider's
+totals.
+
+**Gap shape:** deliberately an integration, not a build — a labor
+import that posts distributions through the approval-gated paths.
+**Size: S–M, and a build-vs-integrate decision to make on purpose.**
+
+## 13. Financial reporting, close & statutory export
+
+**Today:** a trial balance, per-account ledgers, and the audit
+trail. No financial statements (balance sheet / P&L / cash flow as
+presentations), no close checklist or close calendar workflow
+beyond fiscal-period gating, no statutory exports.
+
+**Real:** statement presentation with comparative periods and
+drill-down to journal lines, a managed close (task lists, preparer/
+reviewer sign-off, late-posting controls), consolidation-ready
+reporting, and machine-readable statutory files — SAF-T in the
+EU/OECD world, CSV/XML audit extracts everywhere. A swappable,
+mappable chart of accounts belongs here too: today the chart is a
+seed constant.
+
+**Gap shape:** reporting is read-only over existing data (S–M);
+close workflow and export formats are additive (M); chart mapping
+touches the account model (M). **Size: M overall.**
+
+## 14. Integrations & API maturity
+
+**Today:** four doors over one dispatch table (CLI, MCP, HTTP,
+agent) with per-command schemas. Idempotency exists exactly once —
+the supplier-invoice reference guard added Oct 31 — and nowhere
+else: a retried HTTP call can double-post wherever a human gate
+doesn't intervene. No webhooks or event stream, no bulk import, no
+EDI, no versioning policy.
+
+**Real:** idempotency keys on every mutating call, an event/outbox
+stream other systems subscribe to, bulk and EDI channels (suppliers
+and customers at Lam scale do not type into portals), API
+versioning with deprecation windows, and rate/tenant controls.
+
+**Gap shape:** the dispatch table is the right seam — idempotency
+and events can be added once, centrally, rather than per command.
+**Size: M.**
+
+## 15. Concurrency, scale & recovery
+
+**Today:** one SQLite file, one writer; the HTTP server serializes
+through a mutex (a locked database would rather queue than
+corrupt). No backups story, no replication, no point-in-time
+recovery beyond the file itself — acceptable for a single-company
+pilot, disqualifying beyond it.
+
+**Real:** concurrent writers with row-level contention only where
+it matters, hot backups and PITR, read replicas for reporting,
+and an upgrade/migration discipline across versions. The honest
+path is an engine change (Postgres-class) behind the core's
+existing connection abstraction — the domain code speaks SQL in a
+small number of places, but the trigger-enforced invariants must
+be re-proven on the new engine, not assumed.
+
+**Gap shape:** the invariants are the migration risk, not the
+queries. **Size: L–XL.**
+
+## 16. Document lifecycle depth
+
+**Today:** the O2C/P2P chains are complete but linear — no partial
+shipments or backorders, no credit memos as first-class documents
+(a return is the correction path; void is draft-only by design
+since Oct 31), no recurring billing, no dunning, no disputes
+workflow. Sales returns and AP overrides carry the correction
+load.
+
+**Real:** split shipments and backorder management, credit/debit
+memos with their own approval chains, installment and milestone
+billing for long-cycle equipment, subscription/recurring revenue
+schedules (tying into §4), and collections tooling.
+
+**Gap shape:** each is a new document type on the established
+state-machine + posting pattern. Also here: reversal linkage is
+today a bare (validated-as-existing, nothing more) foreign key —
+a formal reversal model, with link validation and
+reversal-of-reversal rules, belongs to this item. **Size: M each.**
+
+## 17. Agent-control depth
+
+**Today:** the propose→confirm gate, one-shot confirmation
+fingerprints, confirm-time revalidation, prompt-attributed
+overrides, and a full audit trail — probe-tested Oct 31. What is
+missing: *authenticated* confirmation (the gate proves a human
+was present, not who), per-agent scopes and budgets (an agent
+that may invoice may not pay), and proposal isolation — a
+proposal currently builds its draft document chain in the open
+(an accepted quote and a fulfilled order exist before the human
+decides; cancelling the proposal leaves them, by design of the
+underlying state machines, though nothing posts).
+
+**Real:** signed/attested approvals tied to the identity system
+of §7, policy-as-data (amount limits per agent per intent,
+time-of-day and counterparty rules), dry-run sandbox isolation for
+proposals with atomic discard, and fleet-level kill switches.
+
+**Gap shape:** identity first (depends on §7's full RBAC), then
+policy tables the agent checks at propose time. **Size: L.**
+
+---
+
+## Build order this document argues for
+
+1. **Done in the sprint:** procure-to-pay (§3), fiscal periods
+   (§6 foundation), approval rule (§7 foundation).
+2. **Multi-currency & FX (§2)** — the first gap that blocks real
+   companies rather than merely inconveniencing them.
+3. **Tax engine slot (§5)** — designed as a slot at the posting
+   choke point, built jurisdiction by jurisdiction.
+4. **Bank reconciliation (§8)** — the CFO's daily proof that the
+   books match the bank.
+5. **Reporting, close & statutory export (§13)** — read-mostly,
+   high-trust value.
+6. **Inventory costing (§9), then manufacturing depth (§10).**
+7. **Fixed assets (§11); payroll as integration (§12).**
+8. **API maturity (§14) and agent-control depth (§17)** — as the
+   doors gain real external users.
+9. **Scale & recovery (§15)** — when a second writer is a real
+   requirement, not a fear.
+10. **Multi-entity consolidation (§1)** — last because it is the
+    most invasive change in the document: every table, every
+    posting, every report. It is designed-for from here on
+    (nothing above may assume one company in a way that blocks
+    it), but it is built when a second entity actually exists.

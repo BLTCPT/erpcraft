@@ -24,7 +24,9 @@ daily-driver replacement for a production ERP. What exists today is the
 foundation everything else stands on, and it is built to be *verified*, not
 trusted:
 
-- **Chart of accounts** — seeded for a small manufacturer (22 accounts).
+- **Chart of accounts** — seeded for a small manufacturer (22 accounts;
+  the procure-to-pay seed adds GR-IR clearing and purchase price
+  variance, so a fully seeded database reports 24).
 - **Double-entry journal** — the core invariant (*every posting balances,
   debits = credits*) is enforced **in the database itself** (SQLite
   triggers), not just in application code. No code path — HTTP, CLI, MCP, an
@@ -122,7 +124,7 @@ E="cargo run -p erpcraft-cli --"
 ```
 
 1. **Seed + health.** `$E health` — Cascade Precision Parts is
-   seeded (22 accounts, 4 customers, and the MRP scenario: BRK-100
+   seeded (24 accounts, 4 customers, and the MRP scenario: BRK-100
    BOM, stock, lead times). `$E trial_balance` — the opening books
    balance at $120,500.00 per side.
 2. **Configured quote.** A BRK-100 in steel with a galvanized finish:

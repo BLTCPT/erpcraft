@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ERPCraft — Hackathon Submission</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 18px 64px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 17px; line-height: 1.6;
+    color: #1c1e21; background: #ffffff;
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.7em; line-height: 1.25; margin: 0.2em 0 0.4em; }
+  h2 { font-size: 1.3em; line-height: 1.3; margin: 1.6em 0 0.5em; padding-top: 0.6em; border-top: 1px solid #d8dce1; }
+  h1 + p em, .meta { color: #5a6068; }
+  p { margin: 0.7em 0; }
+  ul, ol { margin: 0.7em 0; padding-left: 1.4em; }
+  li { margin: 0.45em 0; }
+  strong { font-weight: 650; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.86em; background: #f0f2f5; padding: 0.1em 0.35em; border-radius: 5px;
+    word-break: break-word;
+  }
+  pre {
+    background: #f0f2f5; border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  pre code { background: none; padding: 0; word-break: normal; }
+  a { color: #0b5ed7; }
+  hr { border: none; border-top: 1px solid #d8dce1; margin: 1.4em 0; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e4e6eb; background: #141619; }
+    h1 + p em, .meta { color: #9aa0a8; }
+    h2, hr { border-top-color: #33373d; }
+    code, pre { background: #23262b; }
+    a { color: #6ea8fe; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>ERPCraft — Hackathon Submission</h1>
+<p class="meta"><em>Meta Global AI Developer Hackathon · Indie Dev Track · Team: Thalo Works</em><br>
+<em>Theme: Build for Your World</em><br>
+<em>Deadline: Wednesday, November 4, 2026, 6:00 PM PT</em></p>
+
+<hr>
+
+<h2>Project name</h2>
+<p>ERPCraft</p>
+
+<h2>Tagline</h2>
+<p>A free, open-source, clean-room ERP in Rust — AI-native from day one, with a double-entry ledger the database itself refuses to let you break.</p>
+
+<h2>What it does</h2>
+<p>ERPCraft is an enterprise resource planning system for the world its builder actually lives in: small manufacturers who run their businesses on spreadsheets because the incumbent ERPs are closed, expensive, and held together by consultants — and who are now being asked to trust AI agents with real books.</p>
+<p>So ERPCraft is built around one idea: <strong>an AI agent should drive the exact same commands a human does, propose before it posts, and work on top of a ledger whose correctness does not depend on any caller behaving — every invariant is enforced by the database itself, and the enforcement has been probe-tested from outside, including with raw SQL.</strong></p>
+<p>The vision is the full ERP: general ledger, order-to-cash, purchasing, inventory, manufacturing planning, and reporting, owned by the people who run it. This repository is the working core of that vision, built and verified in the open:</p>
+<ul>
+<li><strong>A double-entry ledger enforced by the database itself.</strong> Every posting must balance (debits = credits) — the rule lives in SQLite triggers, not application code, so entries can only be <em>created</em> as drafts and post through the one balance-checked transition; direct posted inserts are refused, amounts are integer cents at rest (a fractional “cent” cannot be stored, let alone posted), and on application connections the append-only guards also fire on the implicit deletes of <code>INSERT OR REPLACE</code>, so history cannot be rewritten through that path either. The journal is append-only; corrections are reversing entries that reference the original. Money is integer cents, never floating point. An external review probed exactly these boundaries with executable tests; every hole it found is fixed and now covered by regression tests in the suite.</li>
+<li><strong>Order-to-cash with a GL posting engine.</strong> Quotes → sales orders → invoices → payments → returns, where the transitions themselves generate the revenue, COGS, payment, and reversal postings. Correctness is pinned by a hand-computed “oracle day”: 14 transactions whose ending trial balance ($129,975.00 per side) is the acceptance suite.</li>
+<li><strong>A variant configurator modeled on SAP LO-VC object dependencies</strong> — precondition, selection condition, and constraint — as a typed AST, evaluated deterministically in the core. Selected components roll into line price <em>and</em> standard cost. AI works only at the edges: it authors dependency rules behind a propose → confirm gate and explains refusals in plain language. Ask for a galvanized finish on an aluminum bracket and the system refuses, naming the rule: <em>“Galvanized finish is available only on steel brackets.”</em></li>
+<li><strong>Procure-to-pay with a three-way match.</strong> The buying mirror of order-to-cash: suppliers → requisitions (approved before they convert) → purchase orders → goods receipts (Dr inventory / Cr GR-IR clearing) → supplier invoices (GR-IR clears at the PO price; the difference posts to purchase price variance) → payments. The three-way match is computed live from the three documents on every read: invoice more than was received, or at any price but the PO price (zero price tolerance, deliberately — any difference is a variance), and the invoice lands <strong>on hold</strong> — recorded, visible, and unpayable until the variance is resolved or a named person overrides it with a recorded reason (the variance facts stay on the invoice either way).</li>
+<li><strong>Controls foundations.</strong> Fiscal periods gate the single posting path — close a period and every door refuses postings dated into it, rolling the whole document transition back. A users/roles registry backs a segregation-of-duties rule: payments above a configured threshold require a named actor and a <em>different</em> approver with an approver/admin role, recorded on the payment and its journal entry. The rule gates the capability, not just the document methods: the generic cash-out journal builders enforce it too. The supplier’s own invoice number is also a duplicate key in procure-to-pay: the same number against the same PO can never be recorded — and so never paid — twice. (See ENTERPRISE_GAPS.md for the honest map of what enterprise scale still needs beyond this, and in what order.)</li>
+<li><strong>One dispatch table, four doors.</strong> 85 commands served identically to an operator CLI, an MCP server on stdio, an HTTP API, and the natural-language agent — JSON out, plain-language refusals, exit codes 0/1/2. Anything a human can do, an agent can drive; there is no second, weaker API. (The HTTP door binds 127.0.0.1 and is a trusted local operator door, like the CLI; the propose → confirm gate is the agent surface’s contract, and the segregation-of-duties rule applies at every door.)</li>
+<li><strong>A natural-language agent behind a propose → confirm gate.</strong> Plain English (“Invoice Acme for the 40 units we shipped Tuesday”) becomes <em>proposed</em> dispatch calls. The confirmation is rendered from actual ledger data — never from model prose — and nothing posts until a human confirms. The agent also answers questions, can propose releasing a plan, receives goods against purchase orders, and pays supplier invoices — including the held ones, where a payment can only be proposed when the prompt itself carries the match-override reason and the approver’s name — enforced in code, not just documented: override attribution the model supplies that does not appear in the human’s own words is discarded. Confirmations are one-shot (a confirmed action cannot be replayed) and revalidated at confirm time, and every confirmation is rendered from the actual document it will post — quantity, price, configuration.</li>
+<li><strong>AI-native MRP on the Warp Speed pattern.</strong> Materials planning that is <em>dynamic</em> (every run recomputes from current orders, stock, BOMs, and configurations — plans are never stored, so a changed order re-plans instantly), <em>explainable</em> (every planned order carries its netting math and demand reasons; a shortage is simply a planned order whose start date has already passed), and <em>agent-native</em> (“Can we build 200 BRK-100 by Nov 15?” is answered from a live run; releasing a planned order goes through the same confirm gate and creates the document — planning never posts to the GL).</li>
+<li><strong>A full audit trail.</strong> Every journal entry explains itself: who posted it, which document it belongs to, why it posted, the complete provenance chain (quote → order → invoice → payments → returns) with reversal links in both directions — and, for agent postings, the verbatim human prompt that proposed it.</li>
+</ul>
+<p>The demo company is Cascade Precision Parts, a fictional small Oregon manufacturer making metal brackets.</p>
+
+<h2>How it was built</h2>
+<p>Pure Rust, three crates in one workspace:</p>
+<ul>
+<li><code>erpcraft-core</code> — the deterministic core: ledger schema and invariant triggers, the posting engine, order-to-cash, procure-to-pay, the controls foundations (fiscal periods, approval rule), the variant configurator, the audit trail, and MRP. The evaluator and the planner are pure functions of current state.</li>
+<li><code>erpcraft-server</code> — an Axum HTTP API over the core.</li>
+<li><code>erpcraft-cli</code> — the dispatch table (CLI + MCP doors) and the natural-language agent adapter over it.</li>
+</ul>
+<p>Design rules decided once and held throughout: integer cents everywhere; double-entry enforced in the DB layer; the journal is append-only and corrections are reversing entries; agents propose, humans confirm, then it posts; deterministic core with AI at the edges (models parse, author behind the gate, and explain — they never evaluate the configurator or compute a plan); every command has a test, and the hand-computed oracle-day trial balance is the acceptance suite. 165 automated tests are green.</p>
+<p>The AI author behind this project works professionally in SAP variant configuration (LO-VC) — the configurator’s dependency semantics come from that world experience, re-implemented clean-room as typed data rather than stringly-typed syntax.</p>
+
+<h2>Partner technology</h2>
+<ul>
+<li><strong>Baseten — Muse Spark Open (<code>meta-models/muse-spark-open-1026</code>), used live.</strong> The agent’s live parse route runs on Baseten (hackathon grant). The shipped demo fixture was recorded from the actual model (schema-valid output). On Oct 31 the evaluation went the whole distance: <strong>all 23 agent acceptance scenarios</strong> — the 12 contract prompts, both MRP intents, the configurator what-if refusal, and the procure-to-pay intents — were sent to the live model and replayed through the real binary; every one landed on the exact contract outcome (postings, refusals, balances). The full accounting, including the model’s stochastic reasoning-loop failures and the two prompt fixes they produced, is in LIVE_EVAL.md. Total live usage: ~150,600 tokens against the grant.</li>
+<li><strong>Meta Model API — wired as a route.</strong> The agent’s client supports the Meta Model API (<code>--client meta</code>) alongside Baseten, the recorded fixture, and a deterministic offline stub, which remains the default so the demo and the test suite run with no network at all. The route’s key verifies live; the $150 credit was never confirmed as landed in the account, so no spend was run against it.</li>
+</ul>
+
+<h2>What to try (5-minute demo)</h2>
+<p>From the repo root, with a fresh database — the full script is in the README:</p>
+<pre><code>export ERPCRAFT_DB=/tmp/demo.db; rm -f $ERPCRAFT_DB
+E="cargo run -p erpcraft-cli --"</code></pre>
+<ol>
+<li><code>$E health</code> and <code>$E trial_balance</code> — the seeded company; opening books balance at $120,500.00 per side.</li>
+<li>Configure a quote: a steel BRK-100 with a galvanized finish (<code>$E create_quote --json '{...}'</code>, then send/accept/order). The configurator forces the reinforced mount via a named constraint and prices the line at $162.00/unit. Then ask for aluminum + galvanized via <code>evaluate_config</code> — it refuses, with its reason.</li>
+<li><code>$E agent "Invoice Acme for the 40 units we shipped Tuesday."</code> — the agent proposes; the confirmation shows the posting rendered from the ledger (total debits $7,720.00 = total credits $7,720.00). Nothing posts until you confirm.</li>
+<li><code>$E agent "Can we build 200 BRK-100 by 2026-11-15?"</code> — a live MRP plan: demand 250, 50 covered, build 200 starting Nov 10, with component purchases netted (30 steel blanks, 110 fastener sets). Push the as-of date past a start date with <code>explain_shortage</code> and the same plan explains the shortage instead.</li>
+<li>Release the fastener purchase through the agent — propose → confirm creates the purchase-order document; the trial balance does not move. Planning never posts.</li>
+<li><code>$E agent --yes "Buy $3,600 of raw materials on credit."</code>, then <code>$E audit_trail --source agent</code> and <code>$E audit_entry &lt;id&gt;</code> — who posted each entry, why, the verbatim prompt, and the full provenance chain.</li>
+</ol>
+<p>Also worth trying: <code>cargo test</code> (the invariant suite, including the oracle day), posting an <em>unbalanced</em> journal entry over HTTP and watching the database itself refuse it (HTTP 400), and <code>erpcraft mcp</code> to drive the same 85 commands as MCP tools.</p>
+<p>And the buying side, in about a minute: <code>$E create_supplier --name 'Harbor Components'</code>, a <code>create_purchase_order</code> for 10 brackets at $60.00, then <code>$E receive_goods</code> (watch Dr Raw Materials / Cr GR-IR post), and <code>$E record_ap_invoice</code> at $65.00 — the invoice lands <strong>on hold</strong> on the price variance and <code>pay_ap_invoice</code> refuses. Either <code>override_ap_match</code> with a recorded reason releases it, or just tell the agent: <code>$E agent "Pay AP invoice 1 anyway — the price increase was approved by Dana."</code> — the proposal shows the hold, the variance, and the override step before the payment, and posts only when you confirm.</p>
+
+<h2>Repository</h2>
+<p><a href="https://github.com/BLTCPT/erpcraft">https://github.com/BLTCPT/erpcraft</a> — public, dual-licensed MIT / Apache-2.0.</p>
+
+<h2>Honest limits</h2>
+<ul>
+<li><strong>MRP scope:</strong> no capacity planning, safety stock, or lot-sizing yet — the planner nets quantities and offsets lead times; those three are the documented next increments (see ROADMAP.md).</li>
+<li><strong>One-off prices:</strong> quote lines snapshot the item master’s price; a one-off unit price on a single line is not yet supported. The agent detects the request, flags the conflict, and refuses rather than posting a wrong price.</li>
+<li><strong>Early alpha:</strong> this is the working core of the ERP vision — ledger, order-to-cash, procure-to-pay, controls foundations, configurator, agent surface, MRP, audit — not yet the payroll, tax-engine, multi-currency, and multi-entity depth the full vision includes. Those are mapped honestly, with a build order, in ENTERPRISE_GAPS.md; the invariants they will stand on are the part that had to be right first, and they are the part that is test-proven here.</li>
+</ul>
+
+<h2>Team</h2>
+<p>Thalo Works — solo indie build (Mark Zellner) with an AI pair-programming workflow, for the Indie Dev Track.</p>
+
+</main>
+</body>
+</html>

@@ -25,7 +25,9 @@ real books.
 
 So ERPCraft is built around one idea: **an AI agent should drive the exact
 same commands a human does, propose before it posts, and work on top of a
-ledger that is provably correct even if the agent — or anyone — misbehaves.**
+ledger whose correctness does not depend on any caller behaving — every
+invariant is enforced by the database itself, and the enforcement has been
+probe-tested from outside, including with raw SQL.**
 
 The vision is the full ERP: general ledger, order-to-cash, purchasing,
 inventory, manufacturing planning, and reporting, owned by the people who run
@@ -34,10 +36,16 @@ the open:
 
 - **A double-entry ledger enforced by the database itself.** Every posting
   must balance (debits = credits) — the rule lives in SQLite triggers, not
-  application code, so no path (HTTP, CLI, MCP, the AI agent, or raw SQL)
-  can post an unbalanced entry. The journal is append-only; corrections are
-  reversing entries that reference the original. Money is integer cents,
-  never floating point.
+  application code. Entries can only be *created* as drafts and post through
+  the one balance-checked transition; direct posted inserts are refused,
+  amounts are integer cents at rest (a fractional "cent" cannot be stored,
+  let alone posted), and on application connections the append-only guards
+  also fire on the implicit deletes of `INSERT OR REPLACE`, so history
+  cannot be rewritten through that path either. The journal is append-only;
+  corrections are reversing entries that reference the original. Money is
+  integer cents, never floating point. An external review probed exactly
+  these boundaries with executable tests; every hole it found is fixed and
+  now covered by regression tests in the suite.
 - **Order-to-cash with a GL posting engine.** Quotes → sales orders →
   invoices → payments → returns, where the transitions themselves generate
   the revenue, COGS, payment, and reversal postings. Correctness is pinned
@@ -58,22 +66,30 @@ the open:
   the difference posts to purchase price variance) → payments. The
   three-way match is computed live from the three documents on every
   read: invoice more than was received, or at any price but the PO
-  price, and the invoice lands **on hold** — recorded, visible, and
-  unpayable until the variance is resolved or a named person
+  price (zero price tolerance, deliberately — any difference is a
+  variance), and the invoice lands **on hold** — recorded, visible,
+  and unpayable until the variance is resolved or a named person
   overrides it with a recorded reason (the variance facts stay on
-  the invoice either way).
+  the invoice either way). The supplier's own invoice number is a
+  duplicate key: the same number against the same PO can never be
+  recorded — and so never paid — twice.
 - **Controls foundations.** Fiscal periods gate the single posting
   path — close a period and every door refuses postings dated into
   it, rolling the whole document transition back. A users/roles
   registry backs a segregation-of-duties rule: payments above a
   configured threshold require a named actor and a *different*
   approver with an approver/admin role, recorded on the payment and
-  its journal entry. (See ENTERPRISE_GAPS.md for the honest map of
+  its journal entry. The rule gates the capability, not just the
+  document methods: the generic cash-out journal builders enforce it
+  too. (See ENTERPRISE_GAPS.md for the honest map of
   what enterprise scale still needs beyond this, and in what order.)
 - **One dispatch table, four doors.** 85 commands served identically to an
   operator CLI, an MCP server on stdio, an HTTP API, and the natural-language
   agent — JSON out, plain-language refusals, exit codes 0/1/2. Anything a
-  human can do, an agent can drive; there is no second, weaker API.
+  human can do, an agent can drive; there is no second, weaker API. (The
+  HTTP door binds 127.0.0.1 and is a trusted local operator door, like the
+  CLI; the propose → confirm gate is the agent surface's contract, and the
+  segregation-of-duties rule applies at every door.)
 - **A natural-language agent behind a propose → confirm gate.** Plain
   English ("Invoice Acme for the 40 units we shipped Tuesday") becomes
   *proposed* dispatch calls. The confirmation is rendered from actual ledger
@@ -81,7 +97,12 @@ the open:
   The agent also answers questions, can propose releasing a plan, receives
   goods against purchase orders, and pays supplier invoices — including
   the held ones, where a payment can only be proposed when the prompt
-  itself carries the match-override reason and the approver's name.
+  itself carries the match-override reason and the approver's name —
+  enforced in code, not just documented: override attribution the model
+  supplies that does not appear in the human's own words is discarded.
+  Confirmations are one-shot (a confirmed action cannot be replayed) and
+  revalidated at confirm time, and every confirmation is rendered from
+  the actual document it will post — quantity, price, configuration.
 - **AI-native MRP on the Warp Speed pattern.** Materials planning that is
   *dynamic* (every run recomputes from current orders, stock, BOMs, and
   configurations — plans are never stored, so a changed order re-plans
@@ -119,7 +140,7 @@ corrections are reversing entries; agents propose, humans confirm, then it
 posts; deterministic core with AI at the edges (models parse, author behind
 the gate, and explain — they never evaluate the configurator or compute a
 plan); every command has a test, and the hand-computed oracle-day trial
-balance is the acceptance suite. 146 automated tests are green.
+balance is the acceptance suite. 165 automated tests are green.
 
 The AI author behind this project works professionally in SAP variant
 configuration (LO-VC) — the configurator's dependency semantics come from

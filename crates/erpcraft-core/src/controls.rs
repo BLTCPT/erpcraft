@@ -166,11 +166,13 @@ pub(crate) fn closed_period_for(conn: &Connection, entry_date: &str) -> Result<O
     }
 }
 
-/// Shape and range check for an ISO date: `YYYY-MM-DD` with a real
-/// month (01–12) and day (01–31). Per-month day counts (Feb 30) are
-/// not policed — the gate compares date strings, and a nonsense day
-/// simply matches no entries.
-fn is_iso_date(s: &str) -> bool {
+/// Strict calendar check for an ISO date: exactly `YYYY-MM-DD` and a
+/// real day of a real month (leap years honored). Anything else —
+/// timestamps ("2026-10-31T00:00:00"), slashes, Feb 30 — is not a date
+/// this system posts on. Strictness matters: the period gate compares
+/// date strings, so a non-canonical string would slip past it
+/// (audit fix, Oct 31).
+pub(crate) fn is_iso_date(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
         return false;
@@ -182,9 +184,28 @@ fn is_iso_date(s: &str) -> bool {
     {
         return false;
     }
+    let year: i64 = s[0..4].parse().unwrap_or(0);
     let month: u32 = s[5..7].parse().unwrap_or(0);
     let day: u32 = s[8..10].parse().unwrap_or(0);
-    (1..=12).contains(&month) && (1..=31).contains(&day)
+    if !(1..=12).contains(&month) || day == 0 {
+        return false;
+    }
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    day <= days_in_month[(month - 1) as usize]
 }
 
 // ---------------------------------------------------------------------------
@@ -355,4 +376,18 @@ pub(crate) fn check_payment_approval(
              threshold needs an approver or admin"
         ))),
     }
+}
+
+/// The approval rule for cash-out postings that do not flow through
+/// the attributed payment functions — the CLI's journal builders,
+/// which post straight through `post_entry` (audit fix, Oct 31: the
+/// rule gates the *capability* — paying cash out above the threshold
+/// needs a second approver — not only two document methods).
+pub fn check_cash_out_approval(
+    conn: &Connection,
+    amount_cents: Cents,
+    actor: Option<&str>,
+    approver: Option<&str>,
+) -> Result<Option<String>> {
+    check_payment_approval(conn, amount_cents, actor, approver, "payment")
 }

@@ -32,8 +32,8 @@ pub mod mrp;
 pub mod procurement;
 
 pub use controls::{
-    approval_threshold, close_fiscal_period, create_fiscal_period, create_user,
-    list_control_settings, list_fiscal_periods, list_users, set_approval_threshold,
+    approval_threshold, check_cash_out_approval, close_fiscal_period, create_fiscal_period,
+    create_user, list_control_settings, list_fiscal_periods, list_users, set_approval_threshold,
     ControlSettingView, FiscalPeriodView, UserView,
 };
 
@@ -50,7 +50,8 @@ pub use mrp::{
 
 pub use procurement::{
     ap_invoice_count, approve_requisition, cancel_purchase_order, cancel_requisition,
-    create_purchase_order, create_requisition, create_supplier, get_ap_invoice,
+    check_ap_payment_ready, create_purchase_order, create_requisition, create_supplier,
+    get_ap_invoice,
     get_procurement_order, get_requisition, list_ap_invoices, list_ap_payments,
     list_ap_payments_for_invoice, list_goods_receipts, list_procurement_orders, list_requisitions,
     list_suppliers, override_ap_match, pay_ap_invoice, pay_ap_invoice_attributed, receive_goods,
@@ -73,6 +74,31 @@ pub use configurator::{
 
 /// Money is always integer minor units (cents). Never f64.
 pub type Cents = i64;
+
+/// Checked money arithmetic (audit fix SF2, Oct 31): a quantity × price
+/// or a running total must never wrap silently in a release build —
+/// overflow is a clean error, not a wrong posting.
+pub(crate) fn mul_cents(qty: i64, unit_cents: Cents, what: &str) -> Result<Cents> {
+    qty.checked_mul(unit_cents).ok_or_else(|| {
+        LedgerError::Invalid(format!(
+            "amount overflow computing {what} ({qty} x {unit_cents} cents)"
+        ))
+    })
+}
+
+pub(crate) fn add_cents(a: Cents, b: Cents, what: &str) -> Result<Cents> {
+    a.checked_add(b).ok_or_else(|| {
+        LedgerError::Invalid(format!("amount overflow computing {what}"))
+    })
+}
+
+pub(crate) fn sum_cents(amounts: impl Iterator<Item = Cents>, what: &str) -> Result<Cents> {
+    let mut total: Cents = 0;
+    for amount in amounts {
+        total = add_cents(total, amount, what)?;
+    }
+    Ok(total)
+}
 
 pub const DEMO_COMPANY: &str = "Cascade Precision Parts";
 /// Standard cost of one finished bracket: $68.00 in cents.
@@ -306,6 +332,26 @@ BEFORE UPDATE ON journal_entries
 WHEN OLD.status = 'posted'
 BEGIN
     SELECT RAISE(ABORT, 'posted journal entries are immutable');
+END;
+
+-- PUBLICATION BOUNDARY (audit fix, Oct 31): an entry may only ever be
+-- CREATED as a draft. Posting is the draft->posted transition guarded
+-- above; a direct INSERT with status='posted' would skip that guard.
+CREATE TRIGGER IF NOT EXISTS trg_entries_insert_draft_only
+BEFORE INSERT ON journal_entries
+WHEN NEW.status <> 'draft'
+BEGIN
+    SELECT RAISE(ABORT, 'journal entries are created as drafts; posting is a transition');
+END;
+
+-- INTEGER CENTS AT REST (audit fix, Oct 31): SQLite column affinity does
+-- not reject REAL values (0.5 'cents' would be stored and later break
+-- integer reads), so the stored type itself is checked on insert.
+CREATE TRIGGER IF NOT EXISTS trg_lines_integer_amounts
+BEFORE INSERT ON journal_lines
+WHEN typeof(NEW.debit_cents) <> 'integer' OR typeof(NEW.credit_cents) <> 'integer'
+BEGIN
+    SELECT RAISE(ABORT, 'journal amounts must be integer cents');
 END;
 
 -- ---------------------------------------------------------------------------
@@ -703,7 +749,13 @@ const OPENING_BALANCES: &[(&str, Cents, Cents)] = &[
 /// Pass `":memory:"` for an ephemeral database (tests).
 pub fn open_db(path: &str) -> Result<Connection> {
     let mut conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // foreign_keys: REFERENCES are enforced. recursive_triggers: an
+    // INSERT OR REPLACE performs an implicit DELETE of the conflicting
+    // row; with recursive triggers ON that delete fires the append-only
+    // guards above, so REPLACE cannot be used to rewrite or remove
+    // journal history on connections opened through here (audit fix,
+    // Oct 31).
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA recursive_triggers = ON;")?;
     init_schema(&conn)?;
     seed_if_empty(&mut conn)?;
     seed_master_data_if_empty(&conn)?;
@@ -730,6 +782,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     // for databases created before the approval rule existed.
     ensure_column(conn, "payments", "approved_by", "TEXT")?;
     ensure_column(conn, "ap_payments", "approved_by", "TEXT")?;
+    // Audit fix (Oct 31): the supplier's own invoice number on AP
+    // invoices — the duplicate-detection key — plus its unique index
+    // (created here, after the column exists on older databases too).
+    ensure_column(conn, "ap_invoices", "supplier_ref", "TEXT")?;
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_invoices_supplier_ref
+         ON ap_invoices (po_id, supplier_ref) WHERE supplier_ref IS NOT NULL;",
+    )?;
     // MRP planning attributes on items (MRP_DESIGN.md).
     ensure_column(
         conn,
@@ -823,6 +883,16 @@ pub fn post_entry(conn: &mut Connection, new: &NewEntry) -> Result<i64> {
 /// and every document transition at once. With no periods defined —
 /// the frozen demo default — nothing is gated.
 pub(crate) fn post_entry_in(tx: &Transaction, new: &NewEntry) -> Result<i64> {
+    // Canonical dates only (audit fix, Oct 31): the period gate below
+    // compares strings, so a timestamp-shaped "date" would compare
+    // outside every period and slip past a close. Every posting in the
+    // system flows through here, so validating here covers all doors.
+    if !crate::controls::is_iso_date(&new.entry_date) {
+        return Err(LedgerError::Invalid(format!(
+            "entry_date '{}' is not a real calendar date in YYYY-MM-DD form",
+            new.entry_date
+        )));
+    }
     if let Some(period) = crate::controls::closed_period_for(tx, &new.entry_date)? {
         return Err(LedgerError::Invalid(format!(
             "cannot post an entry dated {}: fiscal period '{period}' is closed",
@@ -1061,6 +1131,46 @@ pub fn entry_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM journal_entries", [], |r| r.get(0))?)
 }
 
+/// The agent-confirmation log (audit fix, Oct 31): the fingerprint of
+/// an agent action a human confirmed and that then posted. Confirming
+/// the same action a second time — the same proposal confirmed twice,
+/// or two proposals carrying the identical gated call — is refused:
+/// a confirmation authorizes ONE posting, not a replayable token.
+///
+/// The table is created here rather than in the SCHEMA batch because
+/// `init_schema`'s migration section is the one place older databases
+/// are guaranteed to pass through on open.
+pub fn agent_action_confirmed(conn: &Connection, fingerprint: &str) -> Result<bool> {
+    ensure_agent_action_log(conn)?;
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_action_log WHERE fingerprint = ?1)",
+        params![fingerprint],
+        |r| r.get(0),
+    )?;
+    Ok(exists)
+}
+
+/// Record a confirmed-and-posted agent action's fingerprint.
+pub fn record_agent_action(conn: &Connection, fingerprint: &str, summary: &str) -> Result<()> {
+    ensure_agent_action_log(conn)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO agent_action_log (fingerprint, summary) VALUES (?1, ?2)",
+        params![fingerprint, summary],
+    )?;
+    Ok(())
+}
+
+fn ensure_agent_action_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_action_log (
+            fingerprint  TEXT PRIMARY KEY,
+            summary      TEXT NOT NULL,
+            confirmed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+    )?;
+    Ok(())
+}
+
 /// Count of seeded accounts.
 pub fn account_count(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM accounts", [], |r| r.get(0))?)
@@ -1177,7 +1287,12 @@ pub struct InvoiceView {
     pub total_cents: Cents,
     /// Derived: sum of recorded payments against this invoice.
     pub paid_cents: Cents,
-    /// Derived: total − paid.
+    /// Derived: invoiced value credited back by sales returns, at the
+    /// invoice lines' own prices (audit fix, Oct 31).
+    pub returned_cents: Cents,
+    /// Derived: total − paid − returned. A return posts a GL reversal,
+    /// so it must also reduce what the invoice can still collect —
+    /// otherwise the subledger and the ledger disagree.
     pub balance_cents: Cents,
     /// Day-3 double-post guard: the revenue entry posted at issuance
     /// (`None` while the invoice is still a draft).
@@ -1310,7 +1425,7 @@ fn doc_lines(
                 sku: row.get(1)?,
                 qty,
                 unit_price_cents,
-                line_total_cents: qty * unit_price_cents,
+                line_total_cents: 0, // computed checked, below the row closure
                 standard_cost_cents: row.get(4)?,
                 configuration: None, // parsed below, outside the row closure
             },
@@ -1320,6 +1435,7 @@ fn doc_lines(
     let mut out = Vec::new();
     for r in rows {
         let (mut line, configuration_json) = r?;
+        line.line_total_cents = mul_cents(line.qty, line.unit_price_cents, "a document line total")?;
         if let Some(json) = configuration_json {
             line.configuration = Some(serde_json::from_str(&json).map_err(|_| {
                 LedgerError::Invalid("a stored line configuration is unreadable".to_string())
@@ -1330,8 +1446,8 @@ fn doc_lines(
     Ok(out)
 }
 
-fn lines_total(lines: &[DocLineView]) -> Cents {
-    lines.iter().map(|l| l.line_total_cents).sum()
+fn lines_total(lines: &[DocLineView]) -> Result<Cents> {
+    sum_cents(lines.iter().map(|l| l.line_total_cents), "a document total")
 }
 
 fn fetch_quote(conn: &Connection, quote_id: i64) -> Result<QuoteView> {
@@ -1351,7 +1467,7 @@ fn fetch_quote(conn: &Connection, quote_id: i64) -> Result<QuoteView> {
         )
         .map_err(missing("quote", quote_id))?;
     let lines = doc_lines(conn, "quote_lines", "quote_id", quote_id)?;
-    let total_cents = lines_total(&lines);
+    let total_cents = lines_total(&lines)?;
     Ok(QuoteView {
         id: quote_id,
         customer_id,
@@ -1380,7 +1496,7 @@ fn fetch_order(conn: &Connection, order_id: i64) -> Result<OrderView> {
         )
         .map_err(missing("sales order", order_id))?;
     let lines = doc_lines(conn, "order_lines", "order_id", order_id)?;
-    let total_cents = lines_total(&lines);
+    let total_cents = lines_total(&lines)?;
     Ok(OrderView {
         id: order_id,
         quote_id,
@@ -1390,6 +1506,21 @@ fn fetch_order(conn: &Connection, order_id: i64) -> Result<OrderView> {
         lines,
         total_cents,
     })
+}
+
+/// The invoiced value already credited back by sales returns,
+/// valued at the invoice lines' own prices.
+fn returned_cents_for(conn: &Connection, invoice_id: i64) -> Result<Cents> {
+    let v: Cents = conn.query_row(
+        "SELECT COALESCE(SUM(srl.qty * il.unit_price_cents), 0)
+         FROM sales_return_lines srl
+         JOIN invoice_lines il
+           ON il.invoice_id = srl.invoice_id AND il.item_id = srl.item_id
+         WHERE srl.invoice_id = ?1",
+        params![invoice_id],
+        |r| r.get(0),
+    )?;
+    Ok(v)
 }
 
 fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
@@ -1412,12 +1543,13 @@ fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
         )
         .map_err(missing("invoice", invoice_id))?;
     let lines = doc_lines(conn, "invoice_lines", "invoice_id", invoice_id)?;
-    let total_cents = lines_total(&lines);
+    let total_cents = lines_total(&lines)?;
     let paid_cents: Cents = conn.query_row(
         "SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE invoice_id = ?1",
         params![invoice_id],
         |r| r.get(0),
     )?;
+    let returned_cents = returned_cents_for(conn, invoice_id)?;
     Ok(InvoiceView {
         id: invoice_id,
         order_id,
@@ -1427,7 +1559,8 @@ fn fetch_invoice(conn: &Connection, invoice_id: i64) -> Result<InvoiceView> {
         lines,
         total_cents,
         paid_cents,
-        balance_cents: total_cents - paid_cents,
+        returned_cents,
+        balance_cents: total_cents - paid_cents - returned_cents,
         gl_entry_id,
         cogs_entry_id,
     })
@@ -1880,7 +2013,7 @@ pub fn cancel_order(conn: &mut Connection, order_id: i64) -> Result<()> {
 //
 // Document transitions post balanced journal entries in the SAME SQLite
 // transaction as the status change — if a posting fails, the transition
-// rolls back with it. The map (DAY3_PREP.md):
+// rolls back with it. The map (docs/DAY3_PREP.md):
 //
 //   invoice draft → issued : Dr 1100 AR / Cr 4000 Revenue (invoice total)
 //                            Dr 5000 COGS / Cr 1220 Finished Goods (COGS)
@@ -2051,13 +2184,19 @@ pub fn issue_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
             "cannot issue invoice {invoice_id}: it has no lines"
         )));
     }
-    let total_cents = lines_total(&lines);
+    let total_cents = lines_total(&lines)?;
     // COGS from the line snapshots (the addendum rule) — never the item
     // master. A NULL snapshot is the missing-standard-cost case: refuse.
     let mut cogs_cents: Cents = 0;
     for line in &lines {
         match line.standard_cost_cents {
-            Some(unit_cost) => cogs_cents += line.qty * unit_cost,
+            Some(unit_cost) => {
+                cogs_cents = add_cents(
+                    cogs_cents,
+                    mul_cents(line.qty, unit_cost, "COGS")?,
+                    "COGS",
+                )?;
+            }
             None => {
                 return Err(LedgerError::Invalid(format!(
                     "cannot issue invoice {invoice_id}: the line for {} has no \
@@ -2116,10 +2255,12 @@ pub fn void_invoice(conn: &mut Connection, invoice_id: i64) -> Result<()> {
         "invoice",
         invoice_id,
         Transition {
-            from: &["draft", "issued", "partially_paid"],
+            from: &["draft"],
             to: "void",
             action: "void",
-            hint: "a paid invoice cannot be voided — corrections are reversing entries",
+            hint: "only a draft invoice can be voided — an issued invoice already \
+                   posted revenue and COGS, so it is corrected by a sales return, \
+                   which reverses both (audit fix, Oct 31)",
         },
     )
 }
@@ -2178,10 +2319,13 @@ pub fn record_payment_attributed(
         params![invoice_id],
         |r| r.get(0),
     )?;
-    if paid_cents + amount_cents > total_cents {
+    let returned_cents = returned_cents_for(&tx, invoice_id)?;
+    let collectible_cents = total_cents - returned_cents;
+    if paid_cents + amount_cents > collectible_cents {
         return Err(LedgerError::Invalid(format!(
             "payment of {amount_cents} cents exceeds the balance of invoice {invoice_id}: \
-             it totals {total_cents} cents with {paid_cents} cents already paid"
+             it totals {total_cents} cents with {paid_cents} cents already paid \
+             and {returned_cents} cents returned"
         )));
     }
     // Segregation of duties: above the configured threshold this
@@ -2223,7 +2367,7 @@ pub fn record_payment_attributed(
         "UPDATE payments SET gl_entry_id = ?1 WHERE id = ?2",
         params![gl_entry_id, payment_id],
     )?;
-    let new_status = if paid_cents + amount_cents == total_cents {
+    let new_status = if paid_cents + amount_cents == collectible_cents {
         "paid"
     } else {
         "partially_paid"
@@ -2326,9 +2470,19 @@ pub fn record_sales_return(
                 inv_line.sku, inv_line.qty, already_returned
             )));
         }
-        revenue_cents += qty * inv_line.unit_price_cents;
+        revenue_cents = add_cents(
+            revenue_cents,
+            mul_cents(*qty, inv_line.unit_price_cents, "return revenue")?,
+            "return revenue",
+        )?;
         match inv_line.standard_cost_cents {
-            Some(unit_cost) => cogs_cents += qty * unit_cost,
+            Some(unit_cost) => {
+                cogs_cents = add_cents(
+                    cogs_cents,
+                    mul_cents(*qty, unit_cost, "return COGS")?,
+                    "return COGS",
+                )?;
+            }
             None => {
                 return Err(LedgerError::Invalid(format!(
                     "cannot return {} against invoice {invoice_id}: the invoice line \

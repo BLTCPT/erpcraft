@@ -369,3 +369,19 @@ fn master_data_seeds_exactly_once() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn absurd_quantity_is_an_overflow_error_not_a_wrapped_total() {
+    // SF2 regression (external review, Oct 31): qty x price used to be an
+    // unchecked i64 multiply — wrapping silently in release builds.
+    let mut conn = open_db(":memory:").unwrap();
+    let quote = quote_for(&conn, "Acme", i64::MAX / 1_000);
+    create_quote(&mut conn, &quote).unwrap();
+    // (list_quotes, not get_quote: the getter maps Invalid to None.)
+    let err = erpcraft_core::list_quotes(&conn)
+        .expect_err("an absurd quantity must not produce a wrapped line total");
+    assert!(
+        err.to_string().contains("overflow"),
+        "expected an overflow error, got: {err}"
+    );
+}

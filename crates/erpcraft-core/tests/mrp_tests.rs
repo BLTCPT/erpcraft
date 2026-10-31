@@ -344,3 +344,102 @@ fn release_creates_documents_not_postings() {
     let fst = stock.iter().find(|s| s.sku == "FST-SET").unwrap();
     assert_eq!((fst.on_hand, fst.on_order), (150, 0));
 }
+
+// ---------------------------------------------------------------------------
+// Audit regressions (Oct 31): the two demand-loss defects the external
+// review reproduced — released parents erasing component demand, and
+// multi-level converging demand undercounted by worklist order.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn releasing_a_parent_keeps_its_component_demand() {
+    let conn = seeded();
+    for s in list_stock(&conn).unwrap() {
+        set_stock(&conn, s.item_id, 0, 0, 0).unwrap();
+    }
+    let demand = vec![MrpDemand {
+        sku: BRACKET_SKU.to_string(),
+        qty: 10,
+        need_date: "2026-11-15".to_string(),
+        configuration: None,
+    }];
+    let plan = run_mrp(&conn, "2026-10-31", &demand).unwrap();
+    assert_eq!(plan.planned_orders.len(), 3, "production + steel + fasteners");
+    let production_key = plan
+        .planned_orders
+        .iter()
+        .find(|o| o.kind == "production")
+        .unwrap()
+        .key
+        .clone();
+    release_planned_order(&conn, "2026-10-31", &demand, &production_key).unwrap();
+
+    // The rerun must NOT re-plan production (WIP covers it) — and must
+    // still plan the components the released order needs.
+    let after = run_mrp(&conn, "2026-10-31", &demand).unwrap();
+    assert!(
+        after.planned_orders.iter().all(|o| o.kind != "production"),
+        "released production is supply, not new demand: {:?}",
+        after.planned_orders.iter().map(|o| (&o.sku, o.qty)).collect::<Vec<_>>()
+    );
+    let purchased: i64 = after
+        .planned_orders
+        .iter()
+        .filter(|o| o.kind == "purchase")
+        .map(|o| o.qty)
+        .sum();
+    assert_eq!(purchased, 20, "steel 10 + fasteners 10 survive the release");
+    let steel_req = after
+        .requirements
+        .iter()
+        .find(|r| r.gross_required > 0 && r.reasons.iter().any(|x| x.origin.contains("released production order")))
+        .expect("component demand is explained by the released order");
+    assert!(steel_req.gross_required >= 10);
+}
+
+#[test]
+fn converging_multilevel_demand_is_fully_counted() {
+    let conn = seeded();
+    // A (make) -> B (make) -> BRK-100, with independent demand on both
+    // A and BRK-100. BRK-100's gross must be 10 (independent) + 10
+    // (via A and B) = 20, even though B only enters the pool when A
+    // explodes.
+    conn.execute(
+        "INSERT INTO items (sku, name, unit_price_cents, standard_cost_cents, make_or_buy)
+         VALUES ('A', 'A', 100, 50, 'make')",
+        [],
+    )
+    .unwrap();
+    let a = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO items (sku, name, unit_price_cents, standard_cost_cents, make_or_buy)
+         VALUES ('B', 'B', 100, 50, 'make')",
+        [],
+    )
+    .unwrap();
+    let b = conn.last_insert_rowid();
+    let bracket = item_id(&conn, BRACKET_SKU);
+    erpcraft_core::add_bom_line(&conn, a, b, 1).unwrap();
+    erpcraft_core::add_bom_line(&conn, b, bracket, 1).unwrap();
+    let demand = vec![
+        MrpDemand {
+            sku: "A".to_string(),
+            qty: 10,
+            need_date: "2026-11-15".to_string(),
+            configuration: None,
+        },
+        MrpDemand {
+            sku: BRACKET_SKU.to_string(),
+            qty: 10,
+            need_date: "2026-11-15".to_string(),
+            configuration: None,
+        },
+    ];
+    let plan = run_mrp(&conn, "2026-10-31", &demand).unwrap();
+    let bracket_req = plan
+        .requirements
+        .iter()
+        .find(|r| r.sku == BRACKET_SKU)
+        .unwrap();
+    assert_eq!(bracket_req.gross_required, 20);
+}

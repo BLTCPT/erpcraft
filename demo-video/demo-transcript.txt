@@ -8,7 +8,7 @@ $ export ERPCRAFT_DB=/tmp/erpcraft-demo-video.db; rm -f $ERPCRAFT_DB
 
 $ erpcraft health
 {
-  "accounts": 22,
+  "accounts": 24,
   "config_models": 1,
   "customers": 4,
   "invoices": 0,
@@ -85,6 +85,13 @@ $ erpcraft trial_balance
       "credit_cents": 970000,
       "debit_cents": 0,
       "name": "Accounts Payable"
+    },
+    {
+      "account_type": "liability",
+      "code": "2050",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Goods Received / Invoice Received (GR-IR)"
     },
     {
       "account_type": "liability",
@@ -176,6 +183,13 @@ $ erpcraft trial_balance
       "credit_cents": 0,
       "debit_cents": 0,
       "name": "Supplies Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6040",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Purchase Price Variance"
     }
   ],
   "total_credit_cents": 12050000,
@@ -425,6 +439,7 @@ Confirm? [y/N]
     ],
     "order_id": 2,
     "paid_cents": 0,
+    "returned_cents": 0,
     "status": "issued",
     "total_cents": 500000
   },
@@ -740,6 +755,13 @@ $ erpcraft trial_balance
     },
     {
       "account_type": "liability",
+      "code": "2050",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Goods Received / Invoice Received (GR-IR)"
+    },
+    {
+      "account_type": "liability",
       "code": "2100",
       "credit_cents": 0,
       "debit_cents": 0,
@@ -828,6 +850,13 @@ $ erpcraft trial_balance
       "credit_cents": 0,
       "debit_cents": 0,
       "name": "Supplies Expense"
+    },
+    {
+      "account_type": "expense",
+      "code": "6040",
+      "credit_cents": 0,
+      "debit_cents": 0,
+      "name": "Purchase Price Variance"
     }
   ],
   "total_credit_cents": 12910000,

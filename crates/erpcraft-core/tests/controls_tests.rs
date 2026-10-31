@@ -285,6 +285,7 @@ fn above_threshold_ap_payment_follows_the_same_rule() {
                 qty: 100,
                 unit_price_cents: 1200,
             }],
+                    supplier_ref: None,
         },
     )
     .unwrap();
@@ -315,4 +316,28 @@ fn user_and_setting_validation() {
     assert!(set_approval_threshold(&conn, -1).is_err());
     set_approval_threshold(&conn, 0).unwrap();
     assert_eq!(erpcraft_core::approval_threshold(&conn).unwrap(), Some(0));
+}
+
+#[test]
+fn non_canonical_dates_cannot_post_or_bypass_a_close() {
+    // Audit regression (Oct 31): a timestamp-shaped "date" compared
+    // outside every closed period and posted straight past the close.
+    let mut conn = open_db(":memory:").unwrap();
+    let period_id = create_fiscal_period(&conn, "2026-10", "2026-10-01", "2026-10-31").unwrap();
+    close_fiscal_period(&conn, period_id).unwrap();
+
+    // The probe's bypass string is now refused as a date at all.
+    let err = post_entry(&mut conn, &manual_entry("2026-10-31T00:00:00")).unwrap_err();
+    assert!(err.to_string().contains("not a real calendar date"), "{err}");
+    // The canonical date is still refused — by the period gate.
+    let err = post_entry(&mut conn, &manual_entry("2026-10-31")).unwrap_err();
+    assert!(err.to_string().contains("is closed"), "{err}");
+
+    // Nonsense days are refused even with no period in play; real
+    // leap days are fine.
+    assert!(post_entry(&mut conn, &manual_entry("2026-02-30")).is_err());
+    assert!(post_entry(&mut conn, &manual_entry("2026-13-01")).is_err());
+    assert!(post_entry(&mut conn, &manual_entry("10/31/2026")).is_err());
+    post_entry(&mut conn, &manual_entry("2028-02-29")).unwrap();
+    assert!(post_entry(&mut conn, &manual_entry("2026-02-29")).is_err());
 }

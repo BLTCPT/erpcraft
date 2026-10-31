@@ -816,6 +816,33 @@ pub fn evaluate(model: &ConfigModelView, input: &BTreeMap<String, ConfigValue>) 
                 }
                 Some(_) => {}
                 None => {
+                    // A forced value must live in its characteristic's
+                    // domain. Save-time validation keeps new deps
+                    // honest; this covers deps stored before it
+                    // existed — an impossible forced value is an
+                    // inconsistency, never part of a Consistent
+                    // verdict (audit fix, Oct 31).
+                    let in_domain = model
+                        .characteristic(&code)
+                        .map(|ch| validate_value(ch, &want).is_ok())
+                        .unwrap_or(false);
+                    if !in_domain {
+                        if !selection_conflicts
+                            .iter()
+                            .any(|e| e.dependency_id == Some(dep.id))
+                        {
+                            selection_conflicts.push(explanation(
+                                dep,
+                                dep.expr.chars(),
+                                vec![format!("{code}={}", want.render())],
+                                format!(
+                                    "selection condition forces {code}={} but that is not a value of {code}",
+                                    want.render()
+                                ),
+                            ));
+                        }
+                        continue;
+                    }
                     effective.insert(code.clone(), want.clone());
                     forced.insert(
                         code,
@@ -1530,11 +1557,28 @@ pub fn create_dependency(conn: &Connection, model_id: i64, new: &NewDependency) 
     }
     match new.kind.as_str() {
         "precondition" => match parse_target(&model, &new.target) {
-            Some(Target::Char(code)) | Some(Target::Value(code, _)) => {
+            Some(Target::Char(code)) => {
                 if model.characteristic(&code).is_none() {
                     return Err(LedgerError::Invalid(format!(
                         "precondition target names unknown characteristic '{code}'"
                     )));
+                }
+            }
+            Some(Target::Value(code, value)) => {
+                match model.characteristic(&code) {
+                    None => {
+                        return Err(LedgerError::Invalid(format!(
+                            "precondition target names unknown characteristic '{code}'"
+                        )));
+                    }
+                    Some(ch) => {
+                        if let Err(detail) = validate_value(ch, &value) {
+                            return Err(LedgerError::Invalid(format!(
+                                "precondition target '{}' is not a legal value: {detail}",
+                                new.target
+                            )));
+                        }
+                    }
                 }
             }
             _ => {
@@ -1552,11 +1596,21 @@ pub fn create_dependency(conn: &Connection, model_id: i64, new: &NewDependency) 
                     )));
                 }
             }
-            Some(Target::Value(code, _)) => {
-                if model.characteristic(&code).is_none() {
-                    return Err(LedgerError::Invalid(format!(
-                        "selection target names unknown characteristic '{code}'"
-                    )));
+            Some(Target::Value(code, value)) => {
+                match model.characteristic(&code) {
+                    None => {
+                        return Err(LedgerError::Invalid(format!(
+                            "selection target names unknown characteristic '{code}'"
+                        )));
+                    }
+                    Some(ch) => {
+                        if let Err(detail) = validate_value(ch, &value) {
+                            return Err(LedgerError::Invalid(format!(
+                                "selection target '{}' is not a legal value: {detail}",
+                                new.target
+                            )));
+                        }
+                    }
                 }
             }
             _ => {

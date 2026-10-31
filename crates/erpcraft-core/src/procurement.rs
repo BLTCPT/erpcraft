@@ -43,7 +43,9 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::{post_entry_in, Cents, LedgerError, NewEntry, NewLine, Result};
+use crate::{
+    add_cents, mul_cents, post_entry_in, sum_cents, Cents, LedgerError, NewEntry, NewLine, Result,
+};
 
 /// GR-IR clearing: goods received, invoice not yet received (and the
 /// mirror when invoicing outruns receiving). Seeded by
@@ -264,6 +266,13 @@ pub struct ApLineInput {
 pub struct NewApInvoice {
     pub po_id: i64,
     pub lines: Vec<ApLineInput>,
+    /// The supplier's own invoice number, when known. This is the
+    /// duplicate-detection key (audit fix, Oct 31): the same ref
+    /// against the same PO is refused as a duplicate recording.
+    /// Without a ref the system cannot distinguish a retry from a
+    /// genuinely separate identical invoice, and recording proceeds.
+    #[serde(default)]
+    pub supplier_ref: Option<String>,
 }
 
 /// One three-way-match variance: which PO line, which kind
@@ -303,6 +312,8 @@ pub struct ApInvoiceView {
     pub variances: Vec<MatchVariance>,
     pub override_reason: Option<String>,
     pub overridden_by: Option<String>,
+    /// The supplier's own invoice number, when one was recorded.
+    pub supplier_ref: Option<String>,
     pub lines: Vec<ApInvoiceLineView>,
     pub total_cents: Cents,
     pub paid_cents: Cents,
@@ -402,14 +413,16 @@ fn fetch_requisition(conn: &Connection, requisition_id: i64) -> Result<Requisiti
             sku: row.get(2)?,
             qty,
             unit_price_cents,
-            line_total_cents: qty * unit_price_cents,
+            line_total_cents: 0, // computed checked, below the row closure
         })
     })?;
     let mut lines = Vec::new();
     for r in rows {
-        lines.push(r?);
+        let mut l = r?;
+        l.line_total_cents = mul_cents(l.qty, l.unit_price_cents, "a requisition line total")?;
+        lines.push(l);
     }
-    let total_cents = lines.iter().map(|l| l.line_total_cents).sum();
+    let total_cents = sum_cents(lines.iter().map(|l| l.line_total_cents), "a requisition total")?;
     Ok(RequisitionView {
         id: requisition_id,
         supplier_id,
@@ -589,19 +602,25 @@ fn fetch_proc_order(conn: &Connection, po_id: i64) -> Result<ProcOrderView> {
             sku: row.get(2)?,
             qty,
             unit_price_cents,
-            line_total_cents: qty * unit_price_cents,
+            line_total_cents: 0, // computed checked, below the row closure
             qty_received: row.get(5)?,
         })
     })?;
     let mut lines = Vec::new();
     for r in rows {
-        lines.push(r?);
+        let mut l = r?;
+        l.line_total_cents = mul_cents(l.qty, l.unit_price_cents, "a PO line total")?;
+        lines.push(l);
     }
-    let total_cents = lines.iter().map(|l| l.line_total_cents).sum();
-    let received_cents = lines
-        .iter()
-        .map(|l| l.qty_received * l.unit_price_cents)
-        .sum();
+    let total_cents = sum_cents(lines.iter().map(|l| l.line_total_cents), "a PO total")?;
+    let mut received_cents: Cents = 0;
+    for l in &lines {
+        received_cents = add_cents(
+            received_cents,
+            mul_cents(l.qty_received, l.unit_price_cents, "received value")?,
+            "received value",
+        )?;
+    }
     Ok(ProcOrderView {
         id: po_id,
         supplier_id,
@@ -827,8 +846,10 @@ pub fn receive_goods(conn: &mut Connection, po_id: i64, lines: &[ReceiveLineInpu
         } else {
             ACCT_RAW_MATERIALS
         };
-        *debit_by_account.entry(account).or_default() += qty * line.unit_price_cents;
-        total_cents += qty * line.unit_price_cents;
+        let received_value = mul_cents(*qty, line.unit_price_cents, "a goods-receipt line")?;
+        let slot = debit_by_account.entry(account).or_default();
+        *slot = add_cents(*slot, received_value, "goods-receipt debits")?;
+        total_cents = add_cents(total_cents, received_value, "a goods-receipt total")?;
     }
 
     tx.execute(
@@ -998,10 +1019,18 @@ fn match_variances(conn: &Connection, ap_invoice_id: i64) -> Result<Vec<MatchVar
 }
 
 fn fetch_ap_invoice(conn: &Connection, ap_invoice_id: i64) -> Result<ApInvoiceView> {
-    let (po_id, supplier_id, status, match_status, override_reason, overridden_by, gl_entry_id) =
-        conn.query_row(
+    let (
+        po_id,
+        supplier_id,
+        status,
+        match_status,
+        override_reason,
+        overridden_by,
+        gl_entry_id,
+        supplier_ref,
+    ) = conn.query_row(
             "SELECT po_id, supplier_id, status, match_status, override_reason,
-                    overridden_by, gl_entry_id
+                    overridden_by, gl_entry_id, supplier_ref
              FROM ap_invoices WHERE id = ?1",
             params![ap_invoice_id],
             |r| {
@@ -1013,6 +1042,7 @@ fn fetch_ap_invoice(conn: &Connection, ap_invoice_id: i64) -> Result<ApInvoiceVi
                     r.get::<_, Option<String>>(4)?,
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<i64>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
                 ))
             },
         )
@@ -1035,16 +1065,18 @@ fn fetch_ap_invoice(conn: &Connection, ap_invoice_id: i64) -> Result<ApInvoiceVi
             sku: row.get(3)?,
             qty,
             unit_price_cents,
-            line_total_cents: qty * unit_price_cents,
+            line_total_cents: 0, // computed checked, below the row closure
             po_unit_price_cents: row.get(6)?,
             qty_received: row.get(7)?,
         })
     })?;
     let mut lines = Vec::new();
     for r in rows {
-        lines.push(r?);
+        let mut l = r?;
+        l.line_total_cents = mul_cents(l.qty, l.unit_price_cents, "an AP invoice line total")?;
+        lines.push(l);
     }
-    let total_cents = lines.iter().map(|l| l.line_total_cents).sum();
+    let total_cents = sum_cents(lines.iter().map(|l| l.line_total_cents), "an AP invoice total")?;
     let paid_cents: Cents = conn.query_row(
         "SELECT COALESCE(SUM(amount_cents), 0) FROM ap_payments WHERE ap_invoice_id = ?1",
         params![ap_invoice_id],
@@ -1060,6 +1092,7 @@ fn fetch_ap_invoice(conn: &Connection, ap_invoice_id: i64) -> Result<ApInvoiceVi
         variances: match_variances(conn, ap_invoice_id)?,
         override_reason,
         overridden_by,
+        supplier_ref,
         lines,
         total_cents,
         paid_cents,
@@ -1096,6 +1129,30 @@ pub fn ap_invoice_count(conn: &Connection) -> Result<i64> {
 /// three-way match runs immediately: a clean invoice lands `open`;
 /// any variance lands it `on_hold`, recorded but not payable.
 pub fn record_ap_invoice(conn: &mut Connection, new: &NewApInvoice) -> Result<i64> {
+    // Duplicate guard (audit fix, Oct 31): with a supplier reference,
+    // the same invoice against the same PO records exactly once. A
+    // retried submission used to match and pay a second time.
+    let supplier_ref = new
+        .supplier_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+    if let Some(r) = supplier_ref {
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM ap_invoices WHERE po_id = ?1 AND supplier_ref = ?2",
+                params![new.po_id, r],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(id) = existing {
+            return Err(LedgerError::Invalid(format!(
+                "supplier invoice '{r}' is already recorded against purchase order {} \
+                 as AP invoice #{id} — refusing to record the same supplier invoice twice",
+                new.po_id
+            )));
+        }
+    }
     if new.lines.is_empty() {
         return Err(LedgerError::Invalid(
             "an AP invoice needs at least one line".to_string(),
@@ -1162,8 +1219,16 @@ pub fn record_ap_invoice(conn: &mut Connection, new: &NewApInvoice) -> Result<i6
                 line.sku, line.qty
             )));
         }
-        grir_cents += qty * line.unit_price_cents;
-        total_cents += qty * inv_price;
+        grir_cents = add_cents(
+            grir_cents,
+            mul_cents(*qty, line.unit_price_cents, "GR-IR clearing")?,
+            "GR-IR clearing",
+        )?;
+        total_cents = add_cents(
+            total_cents,
+            mul_cents(*qty, *inv_price, "an AP invoice line")?,
+            "an AP invoice total",
+        )?;
     }
     if total_cents <= 0 {
         return Err(LedgerError::Invalid(
@@ -1173,9 +1238,9 @@ pub fn record_ap_invoice(conn: &mut Connection, new: &NewApInvoice) -> Result<i6
     }
 
     tx.execute(
-        "INSERT INTO ap_invoices (po_id, supplier_id, status, match_status)
-         VALUES (?1, ?2, 'open', 'matched')",
-        params![new.po_id, order.supplier_id],
+        "INSERT INTO ap_invoices (po_id, supplier_id, status, match_status, supplier_ref)
+         VALUES (?1, ?2, 'open', 'matched', ?3)",
+        params![new.po_id, order.supplier_id, supplier_ref],
     )?;
     let ap_invoice_id = tx.last_insert_rowid();
     for (po_line_id, (qty, inv_price)) in &wanted {
@@ -1453,4 +1518,49 @@ pub fn pay_ap_invoice_attributed(
     )?;
     tx.commit()?;
     Ok(payment_id)
+}
+
+/// Pre-flight for a multi-step agent action that ends in paying this
+/// invoice (audit fix, Oct 31): everything the payment would refuse
+/// for reasons knowable BEFORE any step runs — a missing, paid or
+/// (without the sequence's own override) held invoice, an amount
+/// above the collectible balance, a closed fiscal period for today.
+/// The agent validates the whole sequence up front, so a refused
+/// payment never leaves a match override behind it.
+pub fn check_ap_payment_ready(
+    conn: &Connection,
+    ap_invoice_id: i64,
+    amount_cents: Cents,
+    match_overridden: bool,
+) -> std::result::Result<(), String> {
+    let invoice = fetch_ap_invoice(conn, ap_invoice_id).map_err(|e| e.to_string())?;
+    match invoice.status.as_str() {
+        "paid" => {
+            return Err(format!("AP invoice #{ap_invoice_id} is already paid"));
+        }
+        "on_hold" if !match_overridden => {
+            return Err(format!(
+                "AP invoice #{ap_invoice_id} is on a three-way-match hold"
+            ));
+        }
+        _ => {}
+    }
+    if amount_cents > invoice.balance_cents {
+        return Err(format!(
+            "payment of {amount_cents} cents exceeds the balance of AP invoice \
+             #{ap_invoice_id} ({} cents)",
+            invoice.balance_cents
+        ));
+    }
+    let today: String = conn
+        .query_row("SELECT date('now')", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if let Some(period) =
+        crate::controls::closed_period_for(conn, &today).map_err(|e| e.to_string())?
+    {
+        return Err(format!(
+            "cannot post a payment dated {today}: fiscal period '{period}' is closed"
+        ));
+    }
+    Ok(())
 }

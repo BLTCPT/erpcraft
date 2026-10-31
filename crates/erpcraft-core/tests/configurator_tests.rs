@@ -753,3 +753,51 @@ fn negative_rolled_up_price_is_refused_not_clamped() {
         "a negative rolled-up price is reported, not clamped: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Audit regression (Oct 31): a selection dependency forcing a value
+// outside the characteristic's domain ("material=unobtainium") used to
+// save cleanly and evaluate as Consistent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn selection_forcing_a_non_domain_value_is_refused_at_save() {
+    let conn = open_db(":memory:").unwrap();
+    let err = erpcraft_core::create_dependency(
+        &conn,
+        1,
+        &erpcraft_core::NewDependency {
+            kind: "selection".to_string(),
+            target: "material=unobtainium".to_string(),
+            expr: erpcraft_core::Expr::And { all: vec![] },
+            source_text: "force non-domain material".to_string(),
+            created_by: "test".to_string(),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not a legal value"), "got: {err}");
+}
+
+#[test]
+fn legacy_invalid_forced_value_evaluates_inconsistent() {
+    // A dep stored before save-time validation existed (inserted
+    // directly, bypassing create_dependency) must still not yield a
+    // Consistent verdict with an impossible value forced in.
+    let conn = open_db(":memory:").unwrap();
+    conn.execute(
+        "INSERT INTO dependencies (model_id, kind, target, expr, source_text, created_by)
+         VALUES (1, 'selection', 'material=unobtainium', '{\"type\":\"and\",\"all\":[]}', 'legacy', 'test')",
+        [],
+    )
+    .unwrap();
+    let config = std::collections::BTreeMap::from([
+        ("finish".to_string(), ConfigValue::Code("bare".to_string())),
+        ("mounting".to_string(), ConfigValue::Code("standard".to_string())),
+        ("quantity".to_string(), ConfigValue::Int(1)),
+    ]);
+    let eval = erpcraft_core::evaluate_configuration(&conn, 1, &config).unwrap();
+    assert!(
+        !matches!(eval.verdict, erpcraft_core::Verdict::Consistent),
+        "an impossible forced value cannot be Consistent: {eval:?}"
+    );
+}

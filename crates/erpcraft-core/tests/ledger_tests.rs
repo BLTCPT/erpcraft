@@ -206,3 +206,90 @@ fn degenerate_entries_are_rejected() {
         "only the opening entry exists"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Publication-boundary regression tests (external audit, Oct 31). These
+// mirror the reviewer's raw-SQL probes: each one must now be REFUSED by
+// the database, and the trial balance must be untouched afterwards.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn raw_sql_cannot_insert_a_posted_entry_directly() {
+    let conn = open_db(":memory:").unwrap();
+    let r = conn.execute(
+        "INSERT INTO journal_entries (entry_date, status) VALUES ('2026-10-31', 'posted')",
+        [],
+    );
+    assert!(r.is_err(), "direct posted INSERT must be refused");
+    let tb = trial_balance(&conn).unwrap();
+    assert_eq!(tb.total_debit_cents, tb.total_credit_cents);
+}
+
+#[test]
+fn raw_sql_replace_cannot_post_an_unbalanced_draft() {
+    let conn = open_db(":memory:").unwrap();
+    // A one-line draft, then REPLACE its header with status='posted':
+    // REPLACE's implicit DELETE must hit the append-only guards
+    // (recursive_triggers is ON for connections opened via open_db).
+    conn.execute(
+        "INSERT INTO journal_entries (entry_date) VALUES ('2026-10-31')",
+        [],
+    )
+    .unwrap();
+    let draft_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO journal_lines (entry_id, account_id, debit_cents, credit_cents)
+         SELECT ?1, id, 100, 0 FROM accounts WHERE code = '1000'",
+        [draft_id],
+    )
+    .unwrap();
+    let r = conn.execute(
+        "INSERT OR REPLACE INTO journal_entries (id, entry_date, status)
+         VALUES (?1, '2026-10-31', 'posted')",
+        [draft_id],
+    );
+    assert!(r.is_err(), "REPLACE-posting an unbalanced draft must be refused");
+    let tb = trial_balance(&conn).unwrap();
+    assert_eq!(tb.total_debit_cents, OPENING_TOTAL_CENTS);
+    assert_eq!(tb.total_debit_cents, tb.total_credit_cents);
+}
+
+#[test]
+fn raw_sql_replace_cannot_remove_a_posted_line() {
+    let conn = open_db(":memory:").unwrap();
+    // Re-pointing posted line 1 at a fresh draft via REPLACE would
+    // silently delete it from posted history if the implicit DELETE
+    // slipped past the immutability triggers.
+    conn.execute(
+        "INSERT INTO journal_entries (entry_date) VALUES ('2026-10-31')",
+        [],
+    )
+    .unwrap();
+    let draft_id = conn.last_insert_rowid();
+    let r = conn.execute(
+        "INSERT OR REPLACE INTO journal_lines (id, entry_id, account_id, debit_cents, credit_cents)
+         SELECT 1, ?1, id, 100, 0 FROM accounts WHERE code = '1000'",
+        [draft_id],
+    );
+    assert!(r.is_err(), "REPLACE of a posted line must be refused");
+    let tb = trial_balance(&conn).unwrap();
+    assert_eq!(tb.total_debit_cents, OPENING_TOTAL_CENTS);
+    assert_eq!(tb.total_debit_cents, tb.total_credit_cents);
+}
+
+#[test]
+fn raw_sql_cannot_store_fractional_cents() {
+    let conn = open_db(":memory:").unwrap();
+    conn.execute(
+        "INSERT INTO journal_entries (entry_date) VALUES ('2026-10-31')",
+        [],
+    )
+    .unwrap();
+    let draft_id = conn.last_insert_rowid();
+    let r = conn.execute(
+        "INSERT INTO journal_lines (entry_id, account_id, debit_cents, credit_cents)
+         SELECT ?1, id, 0.5, 0 FROM accounts WHERE code = '1000'",
+        [draft_id],
+    );
+    assert!(r.is_err(), "fractional cents must be refused at insert");
+}

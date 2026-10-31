@@ -1,4 +1,4 @@
-//! The one dispatch table behind both Day-4 doors (DAY4_PREP.md).
+//! The one dispatch table behind both Day-4 doors (docs/DAY4_PREP.md).
 //!
 //! Every command — CLI subcommand and MCP tool alike — resolves to one
 //! function here, and every function calls `erpcraft-core` directly.
@@ -52,7 +52,7 @@ pub enum Door {
     Mcp,
     /// The Day-5 natural-language agent (see `crate::agent`). Its
     /// postings carry `source: "agent"` — the audit decision in
-    /// DAY5_PREP.md: the tag where the door controls it, the verbatim
+    /// docs/DAY5_PREP.md: the tag where the door controls it, the verbatim
     /// prompt in the memo (agent-supplied builder memos are honored
     /// only through this door).
     Agent,
@@ -656,7 +656,7 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// The manual-journal builders (DAY4_PREP.md): the agent-contract
+/// The manual-journal builders (docs/DAY4_PREP.md): the agent-contract
 /// spec's named intents have no dedicated core functions — on the
 /// oracle day they are plain `post_entry` calls with fixed account
 /// pairs. Each builder here constructs exactly one two-line
@@ -1757,7 +1757,15 @@ pub fn dispatch(conn: &mut Connection, door: Door, name: &str, args: &Value) -> 
             let lines: Vec<ApLineInput> = serde_json::from_value(lines_value).map_err(|e| {
                 DispatchError::refused(format!("invalid record_ap_invoice lines: {e}"))
             })?;
-            let id = record_ap_invoice(conn, &NewApInvoice { po_id, lines })?;
+            let supplier_ref = opt_str(args, "supplier_ref").map(|s| s.to_string());
+            let id = record_ap_invoice(
+                conn,
+                &NewApInvoice {
+                    po_id,
+                    lines,
+                    supplier_ref,
+                },
+            )?;
             let invoice = get_ap_invoice(conn, id)?.ok_or_else(|| {
                 DispatchError::internal(format!(
                     "AP invoice {id} was recorded but could not be read back"
@@ -1982,17 +1990,37 @@ fn cmd_builder(
     args: &Value,
 ) -> DispatchResult {
     let amount = req_i64(args, "amount_cents")?;
+    // Segregation of duties (audit fix, Oct 31): a builder that pays
+    // cash OUT is a payment whichever door asks — above the approval
+    // threshold it needs an actor and a different approver, exactly
+    // like the document payments, and the approver joins the memo.
+    // Before this check, the generic pay_supplier builder posted
+    // straight through post_entry and bypassed the rule entirely.
+    let approved_by = if credit == "1000" {
+        erpcraft_core::check_cash_out_approval(
+            conn,
+            amount,
+            opt_str(args, "actor"),
+            opt_str(args, "approver"),
+        )?
+    } else {
+        None
+    };
     let entry_date = opt_str(args, "entry_date")
         .map(|s| s.to_string())
         .unwrap_or_else(today_utc);
     // The agent door carries the audit memo (intent summary + the
-    // verbatim prompt, DAY5_PREP.md); the operator doors keep the
+    // verbatim prompt, docs/DAY5_PREP.md); the operator doors keep the
     // builder's fixed memo, so a CLI/MCP caller cannot rewrite what
     // a builder entry says it is.
     let memo = if door == Door::Agent {
         opt_str(args, "memo").unwrap_or(memo).to_string()
     } else {
         memo.to_string()
+    };
+    let memo = match &approved_by {
+        Some(name) => format!("{memo} — approved by {name}"),
+        None => memo,
     };
     let new = NewEntry {
         entry_date,
@@ -2089,7 +2117,7 @@ mod tests {
 
     #[test]
     fn builders_post_the_preps_account_pairs_tagged_by_door() {
-        // The exact pairs from DAY4_PREP.md — a typo here mis-posts
+        // The exact pairs from docs/DAY4_PREP.md — a typo here mis-posts
         // real money, so the table is asserted, not trusted.
         let expected: &[(&str, &str, &str, &str)] = &[
             ("buy_materials", "Buy materials", "1200", "2000"),

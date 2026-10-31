@@ -163,6 +163,7 @@ fn full_p2p_lifecycle_posts_each_step_and_grir_nets_to_zero() {
                 qty: 100,
                 unit_price_cents: 1200,
             }],
+                    supplier_ref: None,
         },
     )
     .expect("record AP invoice");
@@ -276,6 +277,7 @@ fn price_variance_holds_payment_and_override_releases_it_with_a_record() {
                 qty: 100,
                 unit_price_cents: 1300,
             }],
+                    supplier_ref: None,
         },
     )
     .expect("record AP invoice");
@@ -353,6 +355,7 @@ fn quantity_variance_holds_and_receiving_the_balance_clears_the_hold() {
                 qty: 100,
                 unit_price_cents: 1200,
             }],
+                    supplier_ref: None,
         },
     )
     .expect("record AP invoice");
@@ -424,6 +427,7 @@ fn overpayment_over_receipt_and_over_invoice_are_all_refused() {
                 qty: 11,
                 unit_price_cents: 1200,
             }],
+                    supplier_ref: None,
         },
     )
     .unwrap_err();
@@ -438,6 +442,7 @@ fn overpayment_over_receipt_and_over_invoice_are_all_refused() {
                 qty: 10,
                 unit_price_cents: 1200,
             }],
+                    supplier_ref: None,
         },
     )
     .expect("record AP invoice");
@@ -586,4 +591,42 @@ fn supplier_names_are_unique_and_blank_names_refused() {
     assert!(create_supplier(&conn, "  ").is_err());
     let id = create_supplier(&conn, "Harbor Components").expect("create supplier");
     assert!(id > supplier);
+}
+
+// ---------------------------------------------------------------------------
+// Audit regression (Oct 31): the same supplier invoice, recorded twice
+// against one PO, used to match twice and pay twice.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_supplier_invoice_ref_is_refused() {
+    let (mut conn, supplier) = seeded();
+    let item = insert_item(&conn, "STL-DUP", "buy");
+    let (po_id, line) = po(&mut conn, supplier, item, 100, 6000);
+    receive_goods(
+        &mut conn,
+        po_id,
+        &[ReceiveLineInput {
+            po_line_id: line,
+            qty: 100,
+        }],
+    )
+    .unwrap();
+    let invoice = |reference: Option<&str>| NewApInvoice {
+        po_id,
+        lines: vec![ApLineInput {
+            po_line_id: line,
+            qty: 10,
+            unit_price_cents: 6000,
+        }],
+        supplier_ref: reference.map(|s| s.to_string()),
+    };
+    record_ap_invoice(&mut conn, &invoice(Some("INV-100"))).unwrap();
+    // Same ref, same PO: a retry, refused — even with identical lines.
+    let err = record_ap_invoice(&mut conn, &invoice(Some("INV-100"))).unwrap_err();
+    assert!(err.to_string().contains("already recorded"), "got: {err}");
+    // A different ref is a different invoice; no ref keeps the legacy
+    // contract (the system cannot tell a retry from a split billing).
+    record_ap_invoice(&mut conn, &invoice(Some("INV-101"))).unwrap();
+    record_ap_invoice(&mut conn, &invoice(None)).unwrap();
 }

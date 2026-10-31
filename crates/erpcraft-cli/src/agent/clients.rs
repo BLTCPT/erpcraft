@@ -1,4 +1,4 @@
-//! Model clients for the Day-5 agent (DAY5_PREP.md): the trait, the
+//! Model clients for the Day-5 agent (docs/DAY5_PREP.md): the trait, the
 //! deterministic stub, the recorded client, the fallback chain, and
 //! the live OpenAI-compatible client.
 //!

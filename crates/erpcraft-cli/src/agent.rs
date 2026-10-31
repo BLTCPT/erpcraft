@@ -1,4 +1,4 @@
-//! The Day-5 natural-language agent (DAY5_PREP.md): a thin adapter
+//! The Day-5 natural-language agent (docs/DAY5_PREP.md): a thin adapter
 //! over the Day-4 dispatch table.
 //!
 //! Flow, for every prompt: the model client parses the prompt into a
@@ -184,7 +184,7 @@ pub struct ProposeOptions {
 /// gated dispatch call that posts it. For the invoice intent the
 /// pre-gate chain (quote → order → draft invoice) has already run —
 /// all draft state — and the gate call is `issue_invoice`, the only
-/// step that posts (DAY5_PREP.md).
+/// step that posts (docs/DAY5_PREP.md).
 #[derive(Debug)]
 pub struct Proposal {
     pub prompt: String,
@@ -213,9 +213,121 @@ enum GateCall {
 }
 
 impl Proposal {
+    /// A stable fingerprint of the gated action (not the wording):
+    /// the same calls with the same arguments are the same action.
+    fn fingerprint(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let canonical = match &self.gate {
+            GateCall::IssueInvoice(id) => format!("issue_invoice:{id}"),
+            GateCall::Dispatch { command, args } => format!("{command}:{args}"),
+            GateCall::Sequence(calls) => calls
+                .iter()
+                .map(|(c, a)| format!("{c}:{a}"))
+                .collect::<Vec<_>>()
+                .join("|"),
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        canonical.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// Validate every posting step of a multi-step action BEFORE the
+    /// first step runs (audit fix, Oct 31): the only sequences the
+    /// agent builds are AP match-override + payment, and a refused
+    /// payment must never leave the override behind it.
+    fn prevalidate_sequence(
+        &self,
+        conn: &Connection,
+        calls: &[(String, Value)],
+    ) -> Result<(), AgentError> {
+        let mut overridden: Vec<i64> = Vec::new();
+        for (command, args) in calls {
+            match command.as_str() {
+                "override_ap_match" => overridden.push(j_i64(args, "ap_invoice_id")),
+                "pay_ap_invoice" => {
+                    let id = j_i64(args, "ap_invoice_id");
+                    erpcraft_core::check_ap_payment_ready(
+                        conn,
+                        id,
+                        j_i64(args, "amount_cents"),
+                        overridden.contains(&id),
+                    )
+                    .map_err(AgentError::CoreRefusal)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Confirm-time revalidation for invoice issuance (audit fix,
+    /// Oct 31): the world may have changed since the proposal was
+    /// rendered — in particular, a second proposal for the same
+    /// shipment may have confirmed first. If an issued invoice for
+    /// the same customer and total already exists (other than this
+    /// draft), issuing is a double-post: refuse.
+    fn check_not_already_invoiced(
+        &self,
+        conn: &mut Connection,
+        invoice_id: i64,
+    ) -> Result<(), AgentError> {
+        // A proposal the human explicitly pushed past a duplicate
+        // warning (allow_duplicate) is a decision, not a replay —
+        // the warning was shown and overridden before this gate.
+        if self.duplicate_warning.is_some() {
+            return Ok(());
+        }
+        let draft = dispatch(conn, Door::Agent, "get_invoice", &json!({ "invoice_id": invoice_id }))
+            .map_err(AgentError::Dispatch)?;
+        let customer_id = j_i64(&draft, "customer_id");
+        let total = j_i64(&draft, "total_cents");
+        let invoices = dispatch(conn, Door::Agent, "list_invoices", &json!({}))
+            .map_err(AgentError::Dispatch)?;
+        let clash = invoices.as_array().and_then(|rows| {
+            rows.iter().find(|inv| {
+                j_i64(inv, "id") != invoice_id
+                    && j_i64(inv, "customer_id") == customer_id
+                    && j_i64(inv, "total_cents") == total
+                    && matches!(
+                        j_str(inv, "status"),
+                        "issued" | "partially_paid" | "paid"
+                    )
+            })
+        });
+        if let Some(existing) = clash {
+            return Err(AgentError::CoreRefusal(format!(
+                "invoice #{} for the same customer and total ({}) was already issued; \
+                 refusing to issue this shipment twice",
+                j_i64(existing, "id"),
+                fmt_cents(total)
+            )));
+        }
+        Ok(())
+    }
+
     /// The confirm half of the gate: run the posting call(s)
     /// through the dispatch table, tagged as the agent door.
     pub fn confirm(&self, conn: &mut Connection) -> Result<Value, AgentError> {
+        // One confirmation, one posting (audit fix, Oct 31): a
+        // confirmed action's fingerprint is logged, and confirming
+        // the same action again — this proposal twice, or a second
+        // proposal carrying the identical gated call — is refused.
+        // A confirmation authorizes one posting, not a replay token.
+        let fingerprint = self.fingerprint();
+        if erpcraft_core::agent_action_confirmed(conn, &fingerprint)
+            .map_err(|e| AgentError::CoreRefusal(e.to_string()))?
+        {
+            return Err(AgentError::CoreRefusal(format!(
+                "this action was already confirmed and posted ({}); refusing to post it twice",
+                self.summary
+            )));
+        }
+        if let GateCall::Sequence(calls) = &self.gate {
+            self.prevalidate_sequence(conn, calls)?;
+        }
+        if let GateCall::IssueInvoice(invoice_id) = &self.gate {
+            self.check_not_already_invoiced(conn, *invoice_id)?;
+        }
         let result = match &self.gate {
             GateCall::IssueInvoice(invoice_id) => dispatch(
                 conn,
@@ -234,7 +346,10 @@ impl Proposal {
                 Ok(Value::Object(combined))
             }
         };
-        result.map_err(AgentError::Dispatch)
+        let value = result.map_err(AgentError::Dispatch)?;
+        erpcraft_core::record_agent_action(conn, &fingerprint, &self.summary)
+            .map_err(|e| AgentError::CoreRefusal(e.to_string()))?;
+        Ok(value)
     }
 
     /// The cancel half: nothing has posted, so there is nothing to
@@ -531,11 +646,30 @@ impl<C: ModelClient> Agent<C> {
         }
 
         // The pre-gate chain: draft state only. If a fulfilled order
-        // for this customer and total already exists and has no
-        // invoice yet, start there.
-        let order_id = match self.fulfilled_order_for(conn, customer_id, total, invoices)? {
+        // for this customer, total AND quantity already exists and
+        // has no invoice yet, start there. A fulfilled order matching
+        // only the total is NOT the same shipment (125 configured
+        // brackets at $162 total exactly what 162 plain ones at $125
+        // do — audit fix, Oct 31): ask, don't silently invoice it.
+        let order_id = match self.fulfilled_order_for(conn, customer_id, total, qty, invoices)? {
             Some(id) => id,
             None => {
+                if let Some((other_id, other_qty, configured)) =
+                    self.fulfilled_qty_mismatch(conn, customer_id, total, qty, invoices)?
+                {
+                    return Ok(ProposeOutcome::Clarification {
+                        prompt: prompt.to_string(),
+                        question: format!(
+                            "There's a fulfilled order #{other_id} for {customer_name} \
+                             totalling {}, but it's {other_qty} {} — not the {qty} units \
+                             in your request, and the same total isn't the same shipment. \
+                             Invoice order #{other_id} as it stands, or is the {qty}-unit \
+                             shipment a separate one?",
+                            fmt_cents(total),
+                            if configured { "configured brackets" } else { "brackets" },
+                        ),
+                    });
+                }
                 let quote = self.call(
                     conn,
                     "create_quote",
@@ -557,16 +691,20 @@ impl<C: ModelClient> Agent<C> {
         let invoice_id = j_i64(&draft, "id");
 
         // Render from the draft invoice — its snapshotted prices and
-        // costs are what issuance will post.
-        let mut cogs: i64 = 0;
-        for line in draft
+        // costs are what issuance will post. EVERY rendered number
+        // comes from the draft document itself, never from the
+        // request: a confirmation that describes a different document
+        // than the one being issued is a false confirmation
+        // (audit fix, Oct 31).
+        let draft_lines: Vec<Value> = draft
             .get("lines")
             .and_then(|v| v.as_array())
             .cloned()
-            .unwrap_or_default()
-        {
+            .unwrap_or_default();
+        let mut cogs: i64 = 0;
+        for line in &draft_lines {
             match line.get("standard_cost_cents").and_then(|v| v.as_i64()) {
-                Some(cost) => cogs += j_i64(&line, "qty") * cost,
+                Some(cost) => cogs += j_i64(line, "qty") * cost,
                 None => {
                     return Ok(ProposeOutcome::Refusal {
                         prompt: prompt.to_string(),
@@ -574,13 +712,42 @@ impl<C: ModelClient> Agent<C> {
                             "The draft invoice's line for {} has no standard-cost \
                              snapshot, so issuance would be refused — nothing can be \
                              proposed until the item carries a standard cost.",
-                            j_str(&line, "sku")
+                            j_str(line, "sku")
                         ),
                     })
                 }
             }
         }
         let draft_total = j_i64(&draft, "total_cents");
+        // Heading, COGS note and summary all describe the DRAFT.
+        let (heading, cogs_note, summary_qty) = match draft_lines.len() {
+            1 => {
+                let l = &draft_lines[0];
+                let l_qty = j_i64(l, "qty");
+                let l_cost = l
+                    .get("standard_cost_cents")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                (
+                    format!(
+                        "Invoice {customer_name} for {l_qty} brackets @ {} = {}",
+                        fmt_cents(j_i64(l, "unit_price_cents")),
+                        fmt_cents(draft_total)
+                    ),
+                    format!("{l_qty} × {} standard cost", fmt_cents(l_cost)),
+                    l_qty,
+                )
+            }
+            _ => (
+                format!(
+                    "Invoice {customer_name} — {} lines totalling {}",
+                    draft_lines.len(),
+                    fmt_cents(draft_total)
+                ),
+                "standard costs from the lines' snapshots".to_string(),
+                qty,
+            ),
+        };
 
         let mut sublines: Vec<String> = Vec::new();
         if let Some(day) = intent.day.as_deref() {
@@ -590,6 +757,22 @@ impl<C: ModelClient> Agent<C> {
         }
         if let Some(note) = price_note {
             sublines.push(note);
+        }
+        if draft_lines.len() == 1 {
+            if let Some(cfg) = draft_lines[0]
+                .get("configuration")
+                .and_then(|v| v.as_object())
+            {
+                if !cfg.is_empty() {
+                    let parts: Vec<String> = cfg
+                        .iter()
+                        .map(|(k, v)| {
+                            format!("{k}={}", v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+                        })
+                        .collect();
+                    sublines.push(format!("Configuration: {}", parts.join(", ")));
+                }
+            }
         }
         let lines = vec![
             ConfirmLine {
@@ -608,10 +791,7 @@ impl<C: ModelClient> Agent<C> {
                 code: "5000".to_string(),
                 debit: cogs,
                 credit: 0,
-                note: Some(format!(
-                    "{qty} × {} standard cost",
-                    fmt_cents(item.standard_cost_cents)
-                )),
+                note: Some(cogs_note),
             },
             ConfirmLine {
                 code: "1220".to_string(),
@@ -620,20 +800,11 @@ impl<C: ModelClient> Agent<C> {
                 note: None,
             },
         ];
-        let confirmation = self.render(
-            conn,
-            &format!(
-                "Invoice {customer_name} for {qty} brackets @ {} = {}",
-                fmt_cents(item.unit_price_cents),
-                fmt_cents(draft_total)
-            ),
-            &sublines,
-            &lines,
-        )?;
+        let confirmation = self.render(conn, &heading, &sublines, &lines)?;
         Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
             prompt: prompt.to_string(),
             intent: "invoice_shipment".to_string(),
-            summary: format!("Invoice {customer_name} for {qty} brackets"),
+            summary: format!("Invoice {customer_name} for {summary_qty} brackets"),
             confirmation_text: confirmation,
             duplicate_warning,
             gate: GateCall::IssueInvoice(invoice_id),
@@ -1023,6 +1194,35 @@ impl<C: ModelClient> Agent<C> {
                 })
             }
         };
+
+        // Cash-out builders are payments (audit fix, Oct 31): above
+        // the approval threshold they need an actor and a different
+        // approver, which an agent proposal can't carry — refuse up
+        // front, exactly like pay_ap_invoice; the dispatch gate
+        // enforces the same rule for direct callers.
+        if credit == "1000" {
+            let settings = self.call(conn, "list_control_settings", &json!({}))?;
+            let threshold = settings.as_array().and_then(|rows| {
+                rows.iter()
+                    .find(|s| j_str(s, "key") == "payment_approval_threshold_cents")
+                    .and_then(|s| j_str(s, "value").parse::<i64>().ok())
+            });
+            if let Some(threshold) = threshold {
+                if amount > threshold {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: format!(
+                            "Paying {} is above the {} payment-approval threshold: the \
+                             {name} command must name an actor and a different \
+                             approver, which an agent proposal can't carry. Run it there \
+                             with --actor and --approver.",
+                            fmt_cents(amount),
+                            fmt_cents(threshold)
+                        ),
+                    });
+                }
+            }
+        }
 
         let summary = builder_summary(name, intent, customer_name.as_deref());
         let memo = format!("{summary} — prompt: \"{prompt}\"");
@@ -1932,16 +2132,24 @@ impl<C: ModelClient> Agent<C> {
             } else {
                 variances.join("; ")
             };
+            // Attribution comes from the human, never from the
+            // model alone (audit fix, Oct 31): the model *extracts*
+            // the override reason and the overrider's name, but both
+            // are honored only when they appear in the human's own
+            // prompt. A model that invents an authorization the human
+            // never wrote produces a refusal, not an override.
+            let prompt_lower = prompt.to_lowercase();
+            let in_prompt = |s: &str| prompt_lower.contains(&s.to_lowercase());
             let reason = intent
                 .override_reason
                 .as_deref()
                 .map(|r| r.trim())
-                .filter(|r| !r.is_empty());
+                .filter(|r| !r.is_empty() && in_prompt(r));
             let overrider = intent
                 .overrider
                 .as_deref()
                 .map(|r| r.trim())
-                .filter(|r| !r.is_empty());
+                .filter(|r| !r.is_empty() && in_prompt(r));
             match (reason, overrider) {
                 (Some(reason), Some(by)) => {
                     let payment_text = self.render(
@@ -2212,26 +2420,85 @@ impl<C: ModelClient> Agent<C> {
         })
     }
 
+    /// Fulfilled orders for this customer with no invoice yet —
+    /// the candidate pool both matchers below scan.
+    fn fulfilled_candidates(
+        &self,
+        conn: &mut Connection,
+        customer_id: i64,
+        invoices: &[Value],
+    ) -> Result<Vec<Value>, AgentError> {
+        let invoiced_orders: Vec<i64> = invoices.iter().map(|i| j_i64(i, "order_id")).collect();
+        let orders = self.call(conn, "list_orders", &json!({}))?;
+        Ok(orders
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter(|o| {
+                        j_i64(o, "customer_id") == customer_id
+                            && j_str(o, "status") == "fulfilled"
+                            && !invoiced_orders.contains(&j_i64(o, "id"))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    fn order_qty(order: &Value) -> i64 {
+        order
+            .get("lines")
+            .and_then(|v| v.as_array())
+            .map(|lines| lines.iter().map(|l| j_i64(l, "qty")).sum())
+            .unwrap_or(0)
+    }
+
+    /// The fulfilled order that IS this shipment: same customer,
+    /// same total, same total quantity.
     fn fulfilled_order_for(
         &self,
         conn: &mut Connection,
         customer_id: i64,
         total: i64,
+        qty: i64,
         invoices: &[Value],
     ) -> Result<Option<i64>, AgentError> {
-        let invoiced_orders: Vec<i64> = invoices.iter().map(|i| j_i64(i, "order_id")).collect();
-        let orders = self.call(conn, "list_orders", &json!({}))?;
-        Ok(orders
-            .as_array()
-            .and_then(|rows| {
-                rows.iter().find(|o| {
-                    j_i64(o, "customer_id") == customer_id
-                        && j_str(o, "status") == "fulfilled"
-                        && j_i64(o, "total_cents") == total
-                        && !invoiced_orders.contains(&j_i64(o, "id"))
-                })
-            })
+        Ok(self
+            .fulfilled_candidates(conn, customer_id, invoices)?
+            .iter()
+            .find(|o| j_i64(o, "total_cents") == total && Self::order_qty(o) == qty)
             .map(|o| j_i64(o, "id")))
+    }
+
+    /// A fulfilled order matching the total but NOT the quantity —
+    /// evidence the described shipment is a different one. Returns
+    /// (order id, its quantity, whether any line is configured).
+    fn fulfilled_qty_mismatch(
+        &self,
+        conn: &mut Connection,
+        customer_id: i64,
+        total: i64,
+        qty: i64,
+        invoices: &[Value],
+    ) -> Result<Option<(i64, i64, bool)>, AgentError> {
+        Ok(self
+            .fulfilled_candidates(conn, customer_id, invoices)?
+            .iter()
+            .find(|o| j_i64(o, "total_cents") == total && Self::order_qty(o) != qty)
+            .map(|o| {
+                let configured = o
+                    .get("lines")
+                    .and_then(|v| v.as_array())
+                    .map(|lines| {
+                        lines.iter().any(|l| {
+                            l.get("configuration")
+                                .map(|c| !c.is_null())
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false);
+                (j_i64(o, "id"), Self::order_qty(o), configured)
+            }))
     }
 
     /// The builder duplicate scan (rule 6): a posted entry with the

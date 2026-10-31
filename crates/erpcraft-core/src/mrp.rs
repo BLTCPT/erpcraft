@@ -642,6 +642,38 @@ fn item_planning(conn: &Connection, item_id: i64) -> Result<(String, String, i64
 }
 
 /// Compute a plan from current state. See the module docs.
+/// Low-level code of an item over the full BOM graph: 0 when nothing
+/// is its parent, else one more than the highest parent's code. Every
+/// parent of an item has a strictly smaller code than the item, which
+/// is the property the planner's ordering relies on. A cycle in the
+/// graph is a data error and refuses the run.
+fn low_level_code(
+    item: i64,
+    parents_of: &BTreeMap<i64, BTreeSet<i64>>,
+    memo: &mut BTreeMap<i64, usize>,
+    visiting: &mut Vec<i64>,
+) -> Result<usize> {
+    if let Some(level) = memo.get(&item) {
+        return Ok(*level);
+    }
+    if visiting.contains(&item) {
+        return Err(LedgerError::Invalid(
+            "the BOM/config structure has a cycle — planning cannot order the items"
+                .to_string(),
+        ));
+    }
+    visiting.push(item);
+    let mut level = 0usize;
+    if let Some(parents) = parents_of.get(&item) {
+        for parent in parents {
+            level = level.max(low_level_code(*parent, parents_of, memo, visiting)? + 1);
+        }
+    }
+    visiting.pop();
+    memo.insert(item, level);
+    Ok(level)
+}
+
 pub fn run_mrp(conn: &Connection, as_of: &str, extra_demand: &[MrpDemand]) -> Result<MrpPlan> {
     parse_date(as_of)?;
     let mut pool: BTreeMap<i64, Vec<ReqLine>> = BTreeMap::new();
@@ -747,10 +779,33 @@ pub fn run_mrp(conn: &Connection, as_of: &str, extra_demand: &[MrpDemand]) -> Re
         });
     }
 
-    // Level order (Kahn over a worklist): a parent is always planned
-    // before the components its plan creates demand for. Processing
-    // a parent pushes new requirement lines into the pool, so the
-    // ready set is re-evaluated after every item.
+    // Released production orders carry their own component demand
+    // (audit fix, Oct 31): a released order's output is counted as
+    // WIP supply, so without this step its components would never be
+    // demanded — release the parent, re-run, and the steel and
+    // fasteners it still needs silently vanish from the plan. The
+    // released order's components are firm demand, needed by its
+    // start date, netted against component stock like any other line.
+    for prod in list_production_orders(conn)? {
+        if prod.status != "open" {
+            continue;
+        }
+        for (comp_item, qty_per) in explosion_for(conn, prod.item_id, None)? {
+            pool.entry(comp_item).or_default().push(ReqLine {
+                qty: prod.qty * qty_per,
+                need_date: prod.start_date.clone(),
+                origin: format!(
+                    "released production order #{} ({} × {})",
+                    prod.id, prod.qty, prod.sku
+                ),
+                config_snapshot: None,
+            });
+        }
+    }
+
+    // Level order (low-level codes over the full BOM graph): a parent
+    // is always planned before the components its plan creates demand
+    // for — see the selection loop below.
     let edges = all_parent_edges(conn)?;
     let mut parents_of: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
     for (parent, children) in &edges {
@@ -759,34 +814,33 @@ pub fn run_mrp(conn: &Connection, as_of: &str, extra_demand: &[MrpDemand]) -> Re
         }
     }
     let mut processed: BTreeSet<i64> = BTreeSet::new();
+    let mut level_memo: BTreeMap<i64, usize> = BTreeMap::new();
 
     let mut requirements: Vec<ItemNetting> = Vec::new();
     let mut planned_orders: Vec<PlannedOrder> = Vec::new();
 
     loop {
-        let next = pool
-            .keys()
-            .filter(|id| !processed.contains(id))
-            .find(|id| {
-                parents_of.get(id).is_none_or(|parents| {
-                    parents
-                        .iter()
-                        .all(|p| !pool.contains_key(p) || processed.contains(p))
-                })
-            })
-            .copied();
-        let item_id = match next {
-            Some(id) => id,
-            None => {
-                if pool.keys().any(|id| !processed.contains(id)) {
-                    return Err(LedgerError::Invalid(
-                        "the BOM/config structure has a cycle — planning cannot order \
-                         the items"
-                            .to_string(),
-                    ));
-                }
-                break;
+        // Plan the unprocessed demanded item with the smallest
+        // low-level code. Every parent has a strictly smaller code,
+        // so when an item is planned, all demand its parents will
+        // ever create is already in its pool lines — including demand
+        // from a parent that only enters the pool later, via a
+        // grandparent's explosion. (The previous worklist treated a
+        // not-yet-demanded parent as no parent at all and silently
+        // dropped that late demand — audit fix, Oct 31.)
+        let mut next: Option<(usize, i64)> = None;
+        for id in pool.keys() {
+            if processed.contains(id) {
+                continue;
             }
+            let level = low_level_code(*id, &parents_of, &mut level_memo, &mut Vec::new())?;
+            if next.is_none_or(|(bl, bid)| (level, *id) < (bl, bid)) {
+                next = Some((level, *id));
+            }
+        }
+        let item_id = match next {
+            Some((_, id)) => id,
+            None => break,
         };
         processed.insert(item_id);
         let mut lines = pool.get(&item_id).cloned().unwrap_or_default();

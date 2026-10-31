@@ -1,6 +1,6 @@
 //! Day-3 posting-engine tests for the ERPCraft core.
 //!
-//! The contract (DAY3_PREP.md): issuance and payments post balanced GL
+//! The contract (docs/DAY3_PREP.md): issuance and payments post balanced GL
 //! entries in the same transaction as the document transition; the
 //! double-post guard lives on the document headers; COGS reads the
 //! invoice lines' standard-cost *snapshots* (the reconciliation
@@ -321,4 +321,71 @@ fn account_ledger_tracks_the_running_balance() {
     // Unknown codes are an error, not an empty ledger.
     let err = account_ledger(&conn, "9999").unwrap_err();
     assert!(matches!(err, LedgerError::UnknownAccount(_)), "got: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// Audit fixes (Oct 31): void semantics + the receivables subledger must
+// agree with the GL — a return reverses revenue in the ledger, so it
+// must also reduce what the invoice can still collect.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn void_is_for_drafts_only() {
+    let mut conn = open_db(":memory:").unwrap();
+    // Draft: voidable.
+    let (_, draft_id) = draft_invoice(&mut conn, "Beta", 5);
+    erpcraft_core::void_invoice(&mut conn, draft_id).unwrap();
+    assert_eq!(get_invoice(&conn, draft_id).unwrap().unwrap().status, "void");
+    // Issued: voiding would strand the posted revenue/COGS — refused.
+    let issued_id = issued_invoice(&mut conn, "Acme", 10);
+    let err = erpcraft_core::void_invoice(&mut conn, issued_id).unwrap_err();
+    assert!(err.to_string().contains("void"), "got: {err}");
+    assert_eq!(get_invoice(&conn, issued_id).unwrap().unwrap().status, "issued");
+}
+
+#[test]
+fn full_return_zeroes_the_collectible_balance() {
+    let mut conn = open_db(":memory:").unwrap();
+    let invoice_id = issued_invoice(&mut conn, "Acme", 10); // $1,250.00
+    let item = bracket_id(&conn);
+    record_sales_return(
+        &mut conn,
+        invoice_id,
+        &[ReturnLine {
+            item_id: item,
+            qty: 10,
+        }],
+    )
+    .unwrap();
+    let view = get_invoice(&conn, invoice_id).unwrap().unwrap();
+    assert_eq!(view.returned_cents, 10 * BRACKET_UNIT_PRICE_CENTS);
+    assert_eq!(view.balance_cents, 0);
+    // The probe's defect: this payment used to succeed and drive AR
+    // below its opening balance. Now it is refused, and nothing posts.
+    let entries_before = entry_count(&conn).unwrap();
+    assert!(record_payment(&mut conn, invoice_id, 10 * BRACKET_UNIT_PRICE_CENTS).is_err());
+    assert_eq!(entry_count(&conn).unwrap(), entries_before);
+}
+
+#[test]
+fn partial_return_reduces_the_payable_balance() {
+    let mut conn = open_db(":memory:").unwrap();
+    let invoice_id = issued_invoice(&mut conn, "Acme", 10);
+    let item = bracket_id(&conn);
+    record_sales_return(
+        &mut conn,
+        invoice_id,
+        &[ReturnLine {
+            item_id: item,
+            qty: 4,
+        }],
+    )
+    .unwrap();
+    let view = get_invoice(&conn, invoice_id).unwrap().unwrap();
+    assert_eq!(view.balance_cents, 6 * BRACKET_UNIT_PRICE_CENTS);
+    // Paying the pre-return total is now an overpayment; the net
+    // balance pays the invoice off exactly.
+    assert!(record_payment(&mut conn, invoice_id, 10 * BRACKET_UNIT_PRICE_CENTS).is_err());
+    record_payment(&mut conn, invoice_id, 6 * BRACKET_UNIT_PRICE_CENTS).unwrap();
+    assert_eq!(get_invoice(&conn, invoice_id).unwrap().unwrap().status, "paid");
 }

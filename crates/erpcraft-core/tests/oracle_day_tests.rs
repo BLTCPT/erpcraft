@@ -146,7 +146,7 @@ fn oracle_day_replays_to_the_hand_computed_trial_balance() {
     // liabilities $35,700.00) are consistent ONLY with $3,600.00:
     // RM 8,600 + 3,600 − 2,900 = 9,300 and AP 9,700 + 3,600 − 4,100 =
     // 9,200, whereas $3,800 leaves both accounts $200 high and the day
-    // at $130,175. The ending state is the acceptance oracle (DAY3_PREP,
+    // at $130,175. The ending state is the acceptance oracle (docs/DAY3_PREP.md,
     // AGENTS.md), so the replay uses $3,600.00.
     manual(
         &mut conn,
