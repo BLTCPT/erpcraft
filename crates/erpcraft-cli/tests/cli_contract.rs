@@ -82,6 +82,7 @@ fn help_lists_the_whole_command_table() {
         "add_characteristic",
         "buy_materials",
         "cancel_order",
+        "complete_production",
         "create_component",
         "create_config_model",
         "create_dependency",

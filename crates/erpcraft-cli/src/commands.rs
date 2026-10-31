@@ -40,6 +40,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum Door {
     Cli,
     Mcp,
+    /// The Day-5 natural-language agent (see `crate::agent`). Its
+    /// postings carry `source: "agent"` — the audit decision in
+    /// DAY5_PREP.md: the tag where the door controls it, the verbatim
+    /// prompt in the memo (agent-supplied builder memos are honored
+    /// only through this door).
+    Agent,
 }
 
 impl Door {
@@ -47,6 +53,7 @@ impl Door {
         match self {
             Door::Cli => "cli",
             Door::Mcp => "mcp",
+            Door::Agent => "agent",
         }
     }
 }
@@ -457,6 +464,7 @@ const BUILDERS: &[(&str, &str, &str, &str)] = &[
         "1200",
     ),
     ("record_labor", "Record direct labor", "1210", "1000"),
+    ("complete_production", "Complete production", "1220", "1210"),
     ("record_deposit", "Record customer deposit", "1000", "2200"),
     ("record_rent", "Record rent", "6000", "1000"),
     ("record_interest", "Record interest", "6010", "1000"),
@@ -480,6 +488,10 @@ fn builder_spec(name: &'static str) -> CommandSpec {
         "record_labor" => (
             "Record direct labor: post Dr 1210 WIP / Cr 1000 Cash for amount_cents (a thin builder over post_entry).",
             "erpcraft record_labor --amount-cents <cents>",
+        ),
+        "complete_production" => (
+            "Complete production: post Dr 1220 Finished Goods Inventory / Cr 1210 Work in Process for amount_cents (a thin builder over post_entry). The units finished are proposal text — the posting is value-only, exactly like the oracle day's T7.",
+            "erpcraft complete_production --amount-cents <cents>",
         ),
         "record_deposit" => (
             "Record customer deposit: post Dr 1000 Cash / Cr 2200 Customer Deposits for amount_cents (a thin builder over post_entry).",
@@ -1030,6 +1042,18 @@ fn entry_or_internal(
     }
 }
 
+/// The builder table read by other layers: (memo, debit account,
+/// credit account) for a builder name. The Day-5 agent renders its
+/// confirmations from these pairs — the table stays the one source,
+/// so a rendered proposal can never promise a different posting than
+/// the builder will make.
+pub fn builder_pair(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    BUILDERS
+        .iter()
+        .find(|(n, _, _, _)| *n == name)
+        .map(|(_, memo, debit, credit)| (*memo, *debit, *credit))
+}
+
 /// One manual-journal builder: exactly one two-line entry through the
 /// one `post_entry`, tagged with the door's source.
 fn cmd_builder(
@@ -1044,9 +1068,18 @@ fn cmd_builder(
     let entry_date = opt_str(args, "entry_date")
         .map(|s| s.to_string())
         .unwrap_or_else(today_utc);
+    // The agent door carries the audit memo (intent summary + the
+    // verbatim prompt, DAY5_PREP.md); the operator doors keep the
+    // builder's fixed memo, so a CLI/MCP caller cannot rewrite what
+    // a builder entry says it is.
+    let memo = if door == Door::Agent {
+        opt_str(args, "memo").unwrap_or(memo).to_string()
+    } else {
+        memo.to_string()
+    };
     let new = NewEntry {
         entry_date,
-        memo: memo.to_string(),
+        memo,
         source: door.source_tag().to_string(),
         reverses_entry_id: None,
         lines: vec![
@@ -1151,6 +1184,7 @@ mod tests {
                 "1200",
             ),
             ("record_labor", "Record direct labor", "1210", "1000"),
+            ("complete_production", "Complete production", "1220", "1210"),
             ("record_deposit", "Record customer deposit", "1000", "2200"),
             ("record_rent", "Record rent", "6000", "1000"),
             ("record_interest", "Record interest", "6010", "1000"),

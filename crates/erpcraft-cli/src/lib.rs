@@ -5,5 +5,6 @@
 //! directly — never HTTP, never re-implemented posting logic (the
 //! `bt mcp` precedent in the rust-backtester).
 
+pub mod agent;
 pub mod commands;
 pub mod mcp;

@@ -1,0 +1,1550 @@
+//! The Day-5 natural-language agent (DAY5_PREP.md): a thin adapter
+//! over the Day-4 dispatch table.
+//!
+//! Flow, for every prompt: the model client parses the prompt into a
+//! structured intent; the adapter resolves it against the ledger
+//! (customers, items, invoices), scans for duplicates, and renders a
+//! confirmation **from the proposed dispatch calls and core data** —
+//! never from model prose. Nothing posts until a human confirms;
+//! [`Proposal::confirm`] is the only path from a proposal to a
+//! posting, and it runs through the same `dispatch` the CLI and MCP
+//! doors use, tagged `Door::Agent` so agent postings carry
+//! `source: "agent"` and a memo with the intent summary and the
+//! verbatim prompt (spec rule 8; the Day-5 audit decision in the
+//! prep). The agent never writes SQL and never computes its own
+//! balances — prices and costs come from the item master and the
+//! document line snapshots, exactly as the doors present them.
+
+pub mod clients;
+
+use crate::commands::{builder_pair, dispatch, DispatchError, Door};
+use clients::ModelClient;
+use erpcraft_core::rusqlite::Connection;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::fmt;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum AgentError {
+    /// The model answered, but its reply could not be used.
+    Model(String),
+    /// No model route could answer (API down, no recording). The
+    /// demo continues through the recorded responses or the CLI —
+    /// never a crash, never a silent post (spec test 12).
+    ModelUnavailable(String),
+    /// A dispatch failure that is ours (internal), surfaced as-is.
+    Dispatch(DispatchError),
+    /// Plumbing: a core refusal during proposal setup. `propose`
+    /// converts it into a [`ProposeOutcome::Refusal`] carrying the
+    /// core's own plain-language message; it never escapes the
+    /// adapter as an error.
+    CoreRefusal(String),
+}
+
+impl fmt::Display for AgentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentError::Model(m) | AgentError::ModelUnavailable(m) | AgentError::CoreRefusal(m) => {
+                write!(f, "{m}")
+            }
+            AgentError::Dispatch(e) => write!(f, "{}", e.message),
+        }
+    }
+}
+
+impl std::error::Error for AgentError {}
+
+// ---------------------------------------------------------------------------
+// Parse request — the context the adapter hands the model client.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct ParseItem {
+    pub id: i64,
+    pub sku: String,
+    pub name: String,
+    pub unit_price_cents: i64,
+    pub standard_cost_cents: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseInvoice {
+    pub id: i64,
+    pub customer_name: String,
+    pub total_cents: i64,
+    pub balance_cents: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseRequest {
+    pub prompt: String,
+    pub today: String,
+    pub customers: Vec<String>,
+    pub items: Vec<ParseItem>,
+    pub open_invoices: Vec<ParseInvoice>,
+}
+
+// ---------------------------------------------------------------------------
+// Outcomes and the proposal
+// ---------------------------------------------------------------------------
+
+/// What a prompt came to. Only `NeedsConfirmation` can ever post,
+/// and only through [`Proposal::confirm`].
+#[derive(Debug)]
+pub enum ProposeOutcome {
+    NeedsConfirmation(Box<Proposal>),
+    /// A question the human must answer before anything is proposed
+    /// (missing quantity, a near-miss customer name, several open
+    /// invoices). Nothing was created and nothing posted.
+    Clarification {
+        prompt: String,
+        question: String,
+    },
+    /// A plain-language no, with the reason (unknown customer, no
+    /// open invoice, a price the chain cannot post). Nothing posted.
+    Refusal {
+        prompt: String,
+        message: String,
+    },
+    /// Outside the agent's twelve intents; the message names what
+    /// the agent *can* do instead of guessing a posting.
+    OutOfScope {
+        prompt: String,
+        message: String,
+    },
+    /// The prompt restated a price that conflicts with the price
+    /// list. Nothing is proposed until the human picks one
+    /// ([`ProposeOptions::price_choice`]).
+    PriceConflict {
+        prompt: String,
+        question: String,
+    },
+    /// The proposed posting matches one already posted. It is only
+    /// ever proposed after an explicit override
+    /// ([`ProposeOptions::allow_duplicate`]).
+    DuplicateWarning {
+        prompt: String,
+        warning: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriceChoice {
+    /// Post at the price-list price.
+    ListPrice,
+    /// The human insists on the prompt's one-off price.
+    OneOff,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProposeOptions {
+    /// The human has seen the duplicate warning and said "post it
+    /// anyway" (spec rule 6).
+    pub allow_duplicate: bool,
+    /// The human has answered a price conflict (spec test 11).
+    pub price_choice: Option<PriceChoice>,
+}
+
+/// A confirmed-ready proposal: the rendered confirmation and the one
+/// gated dispatch call that posts it. For the invoice intent the
+/// pre-gate chain (quote → order → draft invoice) has already run —
+/// all draft state — and the gate call is `issue_invoice`, the only
+/// step that posts (DAY5_PREP.md).
+#[derive(Debug)]
+pub struct Proposal {
+    pub prompt: String,
+    pub intent: String,
+    pub summary: String,
+    pub confirmation_text: String,
+    /// The duplicate warning, when the human overrode one to get
+    /// this proposal; it is printed at the top of the confirmation.
+    pub duplicate_warning: Option<String>,
+    gate: GateCall,
+    draft_invoice_id: Option<i64>,
+}
+
+#[derive(Debug)]
+enum GateCall {
+    IssueInvoice(i64),
+    Dispatch { command: String, args: Value },
+}
+
+impl Proposal {
+    /// The confirm half of the gate: run the one posting call
+    /// through the dispatch table, tagged as the agent door.
+    pub fn confirm(&self, conn: &mut Connection) -> Result<Value, AgentError> {
+        let result = match &self.gate {
+            GateCall::IssueInvoice(invoice_id) => dispatch(
+                conn,
+                Door::Agent,
+                "issue_invoice",
+                &json!({ "invoice_id": invoice_id }),
+            ),
+            GateCall::Dispatch { command, args } => dispatch(conn, Door::Agent, command, args),
+        };
+        result.map_err(AgentError::Dispatch)
+    }
+
+    /// The cancel half: nothing has posted, so there is nothing to
+    /// reverse. An intent-1 draft invoice simply stays unissued.
+    pub fn cancel_message(&self) -> String {
+        match self.draft_invoice_id {
+            Some(id) => format!("Cancelled — nothing posted. Draft invoice #{id} stays unissued."),
+            None => "Cancelled — nothing posted.".to_string(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The agent
+// ---------------------------------------------------------------------------
+
+/// The ledger context one proposal is resolved against: the reads
+/// the adapter gathered (through the dispatch table) before the
+/// model was called.
+struct Ctx<'a> {
+    customers: &'a [(i64, String)],
+    items: &'a [ParseItem],
+    invoices: &'a [Value],
+}
+
+pub struct Agent<C: ModelClient> {
+    client: C,
+    today: String,
+}
+
+impl<C: ModelClient> Agent<C> {
+    /// `today` is the demo day (`YYYY-MM-DD`) relative days resolve
+    /// against — injected so the acceptance suite is deterministic.
+    pub fn new(client: C, today: impl Into<String>) -> Self {
+        Agent {
+            client,
+            today: today.into(),
+        }
+    }
+
+    pub fn propose(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+    ) -> Result<ProposeOutcome, AgentError> {
+        self.propose_with(conn, prompt, &ProposeOptions::default())
+    }
+
+    pub fn propose_with(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        match self.propose_inner(conn, prompt, options) {
+            Ok(outcome) => Ok(outcome),
+            Err(AgentError::CoreRefusal(message)) => Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message,
+            }),
+            Err(other) => Err(other),
+        }
+    }
+
+    fn propose_inner(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        // Context — gathered through the dispatch reads, the same
+        // numbers every door sees.
+        let customers = self.customers(conn)?;
+        let items = self.items(conn)?;
+        let invoices = self.call(conn, "list_invoices", &json!({}))?;
+        let invoice_rows: Vec<Value> = invoices.as_array().cloned().unwrap_or_default();
+
+        let request = ParseRequest {
+            prompt: prompt.to_string(),
+            today: self.today.clone(),
+            customers: customers.iter().map(|(_, n)| n.clone()).collect(),
+            items: items.clone(),
+            open_invoices: invoice_rows
+                .iter()
+                .filter(|inv| {
+                    matches!(j_str(inv, "status"), "issued" | "partially_paid")
+                        && j_i64(inv, "balance_cents") > 0
+                })
+                .map(|inv| ParseInvoice {
+                    id: j_i64(inv, "id"),
+                    customer_name: j_str(inv, "customer_name").to_string(),
+                    total_cents: j_i64(inv, "total_cents"),
+                    balance_cents: j_i64(inv, "balance_cents"),
+                })
+                .collect(),
+        };
+
+        let raw = self.client.parse_intent(&request)?;
+        let Some(intent) = parse_intent_json(&raw) else {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: "I couldn't turn that into one of the postings I know how to \
+                          propose. Try: \"Invoice Acme for the 40 units we shipped Tuesday.\""
+                    .to_string(),
+            });
+        };
+
+        let ctx = Ctx {
+            customers: &customers,
+            items: &items,
+            invoices: &invoice_rows,
+        };
+        match intent.intent.as_str() {
+            "invoice_shipment" => self.propose_invoice(conn, prompt, &intent, &ctx, options),
+            "record_payment" => self.propose_payment(conn, prompt, &intent, &ctx, options),
+            "record_return" => self.propose_return(conn, prompt, &intent, &ctx, options),
+            "buy_materials"
+            | "pay_supplier"
+            | "issue_materials"
+            | "record_labor"
+            | "complete_production"
+            | "record_deposit"
+            | "record_rent"
+            | "record_interest"
+            | "record_depreciation" => {
+                self.propose_builder(conn, prompt, &intent, &customers, options)
+            }
+            "out_of_scope" => {
+                let topic = intent.topic.as_deref().unwrap_or("that");
+                Ok(ProposeOutcome::OutOfScope {
+                    prompt: prompt.to_string(),
+                    message: format!(
+                        "I don't handle {topic} yet. I can invoice shipped units, record \
+                         payments, deposits and returns, buy materials on credit, pay \
+                         suppliers, issue materials, record labor and production, and \
+                         post rent, interest and depreciation."
+                    ),
+                })
+            }
+            _ => Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: "I couldn't turn that into one of the postings I know how to \
+                          propose. Try: \"Invoice Acme for the 40 units we shipped Tuesday.\""
+                    .to_string(),
+            }),
+        }
+    }
+
+    // -- Intent 1: invoice a shipment --------------------------------
+
+    fn propose_invoice(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        ctx: &Ctx,
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        let (customers, items, invoices) = (ctx.customers, ctx.items, ctx.invoices);
+        let (customer_id, customer_name) =
+            match self.require_customer(customers, intent.customer.as_deref(), prompt) {
+                Ok(pair) => pair,
+                Err(outcome) => return Ok(outcome),
+            };
+        let Some(qty) = intent.qty.filter(|q| *q > 0) else {
+            return Ok(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: "How many units, and which day?".to_string(),
+            });
+        };
+        let item = match self.require_item(items, prompt) {
+            Ok(item) => item,
+            Err(outcome) => return Ok(outcome),
+        };
+
+        // Rule 2: prices come from the price list, never the prompt.
+        let mut price_note: Option<String> = None;
+        if let Some(stated) = money_slot(&intent.price_each)? {
+            if stated != item.unit_price_cents {
+                match options.price_choice {
+                    None => {
+                        return Ok(ProposeOutcome::PriceConflict {
+                            prompt: prompt.to_string(),
+                            question: format!(
+                                "The price list says {}/unit. Post at {}, or confirm {} as a one-off?",
+                                fmt_cents(item.unit_price_cents),
+                                fmt_cents(item.unit_price_cents),
+                                fmt_cents(stated)
+                            ),
+                        });
+                    }
+                    Some(PriceChoice::ListPrice) => {
+                        price_note = Some(format!(
+                            "Price: the price-list {} (the prompt's {} was not used)",
+                            fmt_cents(item.unit_price_cents),
+                            fmt_cents(stated)
+                        ));
+                    }
+                    Some(PriceChoice::OneOff) => {
+                        return Ok(ProposeOutcome::Refusal {
+                            prompt: prompt.to_string(),
+                            message: format!(
+                                "A one-off price of {} can't be posted through the \
+                                 order-to-cash chain — quote lines snapshot the item \
+                                 master's {} and no step overrides it. Change the item \
+                                 price first, or post at the price-list price.",
+                                fmt_cents(stated),
+                                fmt_cents(item.unit_price_cents)
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+
+        let total = qty * item.unit_price_cents;
+
+        // Rule 6: duplicates are flagged before any draft is created.
+        let duplicate_warning = invoices
+            .iter()
+            .find(|inv| {
+                j_i64(inv, "customer_id") == customer_id
+                    && matches!(j_str(inv, "status"), "issued" | "partially_paid" | "paid")
+                    && j_i64(inv, "total_cents") == total
+            })
+            .map(|existing| {
+                format!(
+                    "This looks like a duplicate of the {customer_name} invoice #{} \
+                     already posted ({}).",
+                    j_i64(existing, "id"),
+                    fmt_cents(total)
+                )
+            });
+        if let Some(warning) = &duplicate_warning {
+            if !options.allow_duplicate {
+                return Ok(ProposeOutcome::DuplicateWarning {
+                    prompt: prompt.to_string(),
+                    warning: format!(
+                        "{warning} I won't post it twice — say the word and I'll \
+                         prepare it anyway."
+                    ),
+                });
+            }
+        }
+
+        // The pre-gate chain: draft state only. If a fulfilled order
+        // for this customer and total already exists and has no
+        // invoice yet, start there.
+        let order_id = match self.fulfilled_order_for(conn, customer_id, total, invoices)? {
+            Some(id) => id,
+            None => {
+                let quote = self.call(
+                    conn,
+                    "create_quote",
+                    &json!({
+                        "customer_id": customer_id,
+                        "lines": [{ "item_id": item.id, "qty": qty }],
+                    }),
+                )?;
+                let quote_id = j_i64(&quote, "id");
+                self.call(conn, "send_quote", &json!({ "quote_id": quote_id }))?;
+                self.call(conn, "accept_quote", &json!({ "quote_id": quote_id }))?;
+                let order = self.call(conn, "create_order", &json!({ "quote_id": quote_id }))?;
+                let order_id = j_i64(&order, "id");
+                self.call(conn, "fulfil_order", &json!({ "order_id": order_id }))?;
+                order_id
+            }
+        };
+        let draft = self.call(conn, "create_invoice", &json!({ "order_id": order_id }))?;
+        let invoice_id = j_i64(&draft, "id");
+
+        // Render from the draft invoice — its snapshotted prices and
+        // costs are what issuance will post.
+        let mut cogs: i64 = 0;
+        for line in draft
+            .get("lines")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            match line.get("standard_cost_cents").and_then(|v| v.as_i64()) {
+                Some(cost) => cogs += j_i64(&line, "qty") * cost,
+                None => {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: format!(
+                            "The draft invoice's line for {} has no standard-cost \
+                             snapshot, so issuance would be refused — nothing can be \
+                             proposed until the item carries a standard cost.",
+                            j_str(&line, "sku")
+                        ),
+                    })
+                }
+            }
+        }
+        let draft_total = j_i64(&draft, "total_cents");
+
+        let mut sublines: Vec<String> = Vec::new();
+        if let Some(day) = intent.day.as_deref() {
+            if let Ok(date) = resolve_day(&self.today, Some(day)) {
+                sublines.push(format!("Shipped {day} ({date})"));
+            }
+        }
+        if let Some(note) = price_note {
+            sublines.push(note);
+        }
+        let lines = vec![
+            ConfirmLine {
+                code: "1100".to_string(),
+                debit: draft_total,
+                credit: 0,
+                note: Some(format!("{customer_name} owes us")),
+            },
+            ConfirmLine {
+                code: "4000".to_string(),
+                debit: 0,
+                credit: draft_total,
+                note: None,
+            },
+            ConfirmLine {
+                code: "5000".to_string(),
+                debit: cogs,
+                credit: 0,
+                note: Some(format!(
+                    "{qty} × {} standard cost",
+                    fmt_cents(item.standard_cost_cents)
+                )),
+            },
+            ConfirmLine {
+                code: "1220".to_string(),
+                debit: 0,
+                credit: cogs,
+                note: None,
+            },
+        ];
+        let confirmation = self.render(
+            conn,
+            &format!(
+                "Invoice {customer_name} for {qty} brackets @ {} = {}",
+                fmt_cents(item.unit_price_cents),
+                fmt_cents(draft_total)
+            ),
+            &sublines,
+            &lines,
+        )?;
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: "invoice_shipment".to_string(),
+            summary: format!("Invoice {customer_name} for {qty} brackets"),
+            confirmation_text: confirmation,
+            duplicate_warning,
+            gate: GateCall::IssueInvoice(invoice_id),
+            draft_invoice_id: Some(invoice_id),
+        })))
+    }
+
+    // -- Intent 2: a payment against an invoice ----------------------
+
+    fn propose_payment(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        ctx: &Ctx,
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        let (customers, invoices) = (ctx.customers, ctx.invoices);
+        let (customer_id, customer_name) =
+            match self.require_customer(customers, intent.customer.as_deref(), prompt) {
+                Ok(pair) => pair,
+                Err(outcome) => return Ok(outcome),
+            };
+        let amount = match self.amount_slot(intent, prompt) {
+            Ok(amount) => amount,
+            Err(outcome) => return Ok(outcome),
+        };
+        let Some(amount) = amount else {
+            return Ok(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: format!("How much did {customer_name} pay?"),
+            });
+        };
+
+        let open: Vec<&Value> = invoices
+            .iter()
+            .filter(|inv| {
+                j_i64(inv, "customer_id") == customer_id
+                    && matches!(j_str(inv, "status"), "issued" | "partially_paid")
+                    && j_i64(inv, "balance_cents") > 0
+            })
+            .collect();
+        let invoice = match open.len() {
+            0 => {
+                return Ok(ProposeOutcome::Refusal {
+                    prompt: prompt.to_string(),
+                    message: format!("{customer_name} has no open invoice to pay against."),
+                })
+            }
+            1 => open[0],
+            _ => {
+                let list = open
+                    .iter()
+                    .map(|inv| {
+                        format!(
+                            "#{} ({} due)",
+                            j_i64(inv, "id"),
+                            fmt_cents(j_i64(inv, "balance_cents"))
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Ok(ProposeOutcome::Clarification {
+                    prompt: prompt.to_string(),
+                    question: format!(
+                        "{customer_name} has {} open invoices: {list}. Which one did they pay against?",
+                        open.len()
+                    ),
+                });
+            }
+        };
+        let invoice_id = j_i64(invoice, "id");
+        let balance = j_i64(invoice, "balance_cents");
+        if amount > balance {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "{} is more than the {} balance on invoice #{invoice_id} — overpayment is refused.",
+                    fmt_cents(amount),
+                    fmt_cents(balance)
+                ),
+            });
+        }
+
+        let payments = self.call(
+            conn,
+            "list_payments_for_invoice",
+            &json!({ "invoice_id": invoice_id }),
+        )?;
+        let duplicate_warning = payments.as_array().and_then(|rows| {
+            rows.iter()
+                .find(|p| j_i64(p, "amount_cents") == amount)
+                .map(|_| {
+                    format!(
+                        "A payment of {} against invoice #{invoice_id} is already recorded.",
+                        fmt_cents(amount)
+                    )
+                })
+        });
+        if let Some(warning) = &duplicate_warning {
+            if !options.allow_duplicate {
+                return Ok(ProposeOutcome::DuplicateWarning {
+                    prompt: prompt.to_string(),
+                    warning: format!(
+                        "{warning} I won't post it twice — say the word and I'll \
+                         prepare it anyway."
+                    ),
+                });
+            }
+        }
+
+        let lines = vec![
+            ConfirmLine {
+                code: "1000".to_string(),
+                debit: amount,
+                credit: 0,
+                note: None,
+            },
+            ConfirmLine {
+                code: "1100".to_string(),
+                debit: 0,
+                credit: amount,
+                note: Some(format!(
+                    "{customer_name}'s balance drops to {}",
+                    fmt_cents(balance - amount)
+                )),
+            },
+        ];
+        let confirmation = self.render(
+            conn,
+            &format!(
+                "{customer_name} paid {} against invoice #{invoice_id}",
+                fmt_cents(amount)
+            ),
+            &[],
+            &lines,
+        )?;
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: "record_payment".to_string(),
+            summary: format!("Record payment from {customer_name}"),
+            confirmation_text: confirmation,
+            duplicate_warning,
+            gate: GateCall::Dispatch {
+                command: "record_payment".to_string(),
+                args: json!({ "invoice_id": invoice_id, "amount_cents": amount }),
+            },
+            draft_invoice_id: None,
+        })))
+    }
+
+    // -- Intent 9: a return ------------------------------------------
+
+    fn propose_return(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        ctx: &Ctx,
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        let (customers, items, invoices) = (ctx.customers, ctx.items, ctx.invoices);
+        let (customer_id, customer_name) =
+            match self.require_customer(customers, intent.customer.as_deref(), prompt) {
+                Ok(pair) => pair,
+                Err(outcome) => return Ok(outcome),
+            };
+        let item = match self.require_item(items, prompt) {
+            Ok(item) => item,
+            Err(outcome) => return Ok(outcome),
+        };
+        let Some(qty) = intent.qty.filter(|q| *q > 0) else {
+            return Ok(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: format!("How many brackets did {customer_name} return?"),
+            });
+        };
+
+        let candidates: Vec<&Value> = invoices
+            .iter()
+            .filter(|inv| {
+                j_i64(inv, "customer_id") == customer_id
+                    && matches!(j_str(inv, "status"), "issued" | "partially_paid" | "paid")
+                    && inv
+                        .get("lines")
+                        .and_then(|v| v.as_array())
+                        .map(|lines| lines.iter().any(|l| j_i64(l, "item_id") == item.id))
+                        .unwrap_or(false)
+            })
+            .collect();
+        let invoice = match candidates.len() {
+            0 => {
+                return Ok(ProposeOutcome::Refusal {
+                    prompt: prompt.to_string(),
+                    message: format!(
+                        "There is no issued invoice for {customer_name} with brackets on it to return against."
+                    ),
+                })
+            }
+            1 => candidates[0],
+            _ => {
+                let list = candidates
+                    .iter()
+                    .map(|inv| format!("#{}", j_i64(inv, "id")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Ok(ProposeOutcome::Clarification {
+                    prompt: prompt.to_string(),
+                    question: format!(
+                        "{customer_name} has several invoices with brackets ({list}). Which invoice are the {qty} returned brackets from?"
+                    ),
+                });
+            }
+        };
+        let invoice_id = j_i64(invoice, "id");
+        let line = invoice
+            .get("lines")
+            .and_then(|v| v.as_array())
+            .and_then(|lines| {
+                lines
+                    .iter()
+                    .find(|l| j_i64(l, "item_id") == item.id)
+                    .cloned()
+            })
+            .unwrap_or(json!({}));
+        let invoiced_qty = j_i64(&line, "qty");
+        if qty > invoiced_qty {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "Invoice #{invoice_id} shipped {invoiced_qty} brackets — {qty} can't come back against it."
+                ),
+            });
+        }
+        let unit_price = j_i64(&line, "unit_price_cents");
+        let Some(unit_cost) = line.get("standard_cost_cents").and_then(|v| v.as_i64()) else {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "Invoice #{invoice_id}'s bracket line has no standard-cost snapshot, so the return's cost reversal can't be computed."
+                ),
+            });
+        };
+        let revenue = qty * unit_price;
+        let cost = qty * unit_cost;
+
+        let entries = self.call(conn, "list_entries", &json!({}))?;
+        let already = entries
+            .as_array()
+            .map(|rows| {
+                rows.iter().any(|e| {
+                    j_str(e, "source") == format!("return:{invoice_id}")
+                        && e.get("lines")
+                            .and_then(|v| v.as_array())
+                            .map(|lines| {
+                                lines.iter().any(|l| {
+                                    j_str(l, "account_code") == "4010"
+                                        && j_i64(l, "debit_cents") == revenue
+                                })
+                            })
+                            .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        let duplicate_warning = already.then(|| {
+            format!("A return of {qty} brackets against invoice #{invoice_id} is already posted.")
+        });
+        if let Some(warning) = &duplicate_warning {
+            if !options.allow_duplicate {
+                return Ok(ProposeOutcome::DuplicateWarning {
+                    prompt: prompt.to_string(),
+                    warning: format!(
+                        "{warning} I won't post it twice — say the word and I'll \
+                         prepare it anyway."
+                    ),
+                });
+            }
+        }
+
+        let lines = vec![
+            ConfirmLine {
+                code: "4010".to_string(),
+                debit: revenue,
+                credit: 0,
+                note: Some(format!("{qty} × {} sale price", fmt_cents(unit_price))),
+            },
+            ConfirmLine {
+                code: "1100".to_string(),
+                debit: 0,
+                credit: revenue,
+                note: Some(format!("{customer_name} owes less")),
+            },
+            ConfirmLine {
+                code: "1220".to_string(),
+                debit: cost,
+                credit: 0,
+                note: Some(format!(
+                    "{qty} × {} standard cost, back in stock",
+                    fmt_cents(unit_cost)
+                )),
+            },
+            ConfirmLine {
+                code: "5000".to_string(),
+                debit: 0,
+                credit: cost,
+                note: None,
+            },
+        ];
+        let confirmation = self.render(
+            conn,
+            &format!("{customer_name} returned {qty} defective brackets"),
+            &[format!(
+                "Corrects invoice #{invoice_id} — both entries reference the original sale"
+            )],
+            &lines,
+        )?;
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: "record_return".to_string(),
+            summary: format!("Record return from {customer_name}"),
+            confirmation_text: confirmation,
+            duplicate_warning,
+            gate: GateCall::Dispatch {
+                command: "record_return".to_string(),
+                args: json!({
+                    "invoice_id": invoice_id,
+                    "lines": [{ "item_id": item.id, "qty": qty }],
+                }),
+            },
+            draft_invoice_id: None,
+        })))
+    }
+
+    // -- Intents 3–8, 10–12: the manual-journal builders -------------
+
+    fn propose_builder(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        customers: &[(i64, String)],
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        let name = intent.intent.as_str();
+        let (_, debit, credit) = builder_pair(name).ok_or_else(|| {
+            AgentError::Model(format!(
+                "intent '{name}' has no builder in the dispatch table"
+            ))
+        })?;
+
+        // The deposit names a customer; resolve it for the proposal
+        // and the memo (the builder itself takes no customer arg).
+        let mut customer_name: Option<String> = None;
+        if name == "record_deposit" {
+            match self.require_customer(customers, intent.customer.as_deref(), prompt) {
+                Ok((_, resolved)) => customer_name = Some(resolved),
+                Err(outcome) => return Ok(outcome),
+            }
+        }
+
+        let amount = match self.amount_slot(intent, prompt) {
+            Ok(amount) => amount,
+            Err(outcome) => return Ok(outcome),
+        };
+        let Some(amount) = amount else {
+            return Ok(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: match name {
+                    "record_rent" => "How much is the rent?".to_string(),
+                    "record_interest" => "How much is the interest?".to_string(),
+                    "record_depreciation" => "How much depreciation?".to_string(),
+                    "record_deposit" => "How much was the deposit?".to_string(),
+                    "complete_production" => {
+                        "What did the finished brackets cost in total?".to_string()
+                    }
+                    _ => "How much?".to_string(),
+                },
+            });
+        };
+
+        let entry_date = match resolve_day(&self.today, intent.day.as_deref()) {
+            Ok(date) => date,
+            Err(unclear) => {
+                return Ok(ProposeOutcome::Clarification {
+                    prompt: prompt.to_string(),
+                    question: unclear,
+                })
+            }
+        };
+
+        let summary = builder_summary(name, intent, customer_name.as_deref());
+        let memo = format!("{summary} — prompt: \"{prompt}\"");
+
+        let duplicate_warning = self
+            .duplicate_entry(conn, debit, credit, amount, &entry_date)?
+            .map(|existing| {
+                format!(
+                    "This looks like a duplicate of entry #{existing} ({} on {entry_date}).",
+                    fmt_cents(amount)
+                )
+            });
+        if let Some(warning) = &duplicate_warning {
+            if !options.allow_duplicate {
+                return Ok(ProposeOutcome::DuplicateWarning {
+                    prompt: prompt.to_string(),
+                    warning: format!(
+                        "{warning} I won't post it twice — say the word and I'll \
+                         prepare it anyway."
+                    ),
+                });
+            }
+        }
+
+        let credit_note = if name == "record_deposit" {
+            Some("a liability, not revenue".to_string())
+        } else if name == "complete_production" {
+            Some("finished goods, ready to sell".to_string())
+        } else {
+            None
+        };
+        let lines = vec![
+            ConfirmLine {
+                code: debit.to_string(),
+                debit: amount,
+                credit: 0,
+                note: None,
+            },
+            ConfirmLine {
+                code: credit.to_string(),
+                debit: 0,
+                credit: amount,
+                note: credit_note,
+            },
+        ];
+        let confirmation = self.render(
+            conn,
+            &builder_headline(name, intent, amount, customer_name.as_deref()),
+            &[format!("Date: {entry_date}")],
+            &lines,
+        )?;
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: name.to_string(),
+            summary: summary.clone(),
+            confirmation_text: confirmation,
+            duplicate_warning,
+            gate: GateCall::Dispatch {
+                command: name.to_string(),
+                args: json!({
+                    "amount_cents": amount,
+                    "entry_date": entry_date,
+                    "memo": memo,
+                }),
+            },
+            draft_invoice_id: None,
+        })))
+    }
+
+    // -- Resolution + scans ------------------------------------------
+
+    fn customers(&self, conn: &mut Connection) -> Result<Vec<(i64, String)>, AgentError> {
+        let rows = self.call(conn, "list_customers", &json!({}))?;
+        Ok(rows
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|c| (j_i64(c, "id"), j_str(c, "name").to_string()))
+            .collect())
+    }
+
+    fn items(&self, conn: &mut Connection) -> Result<Vec<ParseItem>, AgentError> {
+        let rows = self.call(conn, "list_items", &json!({}))?;
+        Ok(rows
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|i| ParseItem {
+                id: j_i64(i, "id"),
+                sku: j_str(i, "sku").to_string(),
+                name: j_str(i, "name").to_string(),
+                unit_price_cents: j_i64(i, "unit_price_cents"),
+                standard_cost_cents: j_i64(i, "standard_cost_cents"),
+            })
+            .collect())
+    }
+
+    /// Customer resolution (spec rule 4): exact match, or a
+    /// clarification for a near-miss, or a refusal with the list for
+    /// an unknown name. Never an auto-match.
+    fn require_customer(
+        &self,
+        customers: &[(i64, String)],
+        given: Option<&str>,
+        prompt: &str,
+    ) -> Result<(i64, String), ProposeOutcome> {
+        let list = customers
+            .iter()
+            .map(|(_, n)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Some(given) = given.map(|g| g.trim()).filter(|g| !g.is_empty()) else {
+            return Err(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: format!("Which customer? On file: {list}."),
+            });
+        };
+        if let Some((id, name)) = customers
+            .iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(given))
+        {
+            return Ok((*id, name.clone()));
+        }
+        let near = customers.iter().find(|(_, n)| {
+            let (g, c) = (given.to_lowercase(), n.to_lowercase());
+            g.contains(&c) || c.contains(&g)
+        });
+        if let Some((_, suggestion)) = near {
+            return Err(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: format!(
+                    "\"{given}\" isn't in the customer list. Did you mean {suggestion}? \
+                     On file: {list}."
+                ),
+            });
+        }
+        Err(ProposeOutcome::Refusal {
+            prompt: prompt.to_string(),
+            message: format!(
+                "{given} isn't in the customer list ({list}). Did you mean one of these, \
+                 or add a new customer?"
+            ),
+        })
+    }
+
+    /// The sellable item: the one seeded finished good; if several
+    /// ever exist, the BRK-100 — anything else is a question, not a
+    /// guess.
+    fn require_item(&self, items: &[ParseItem], prompt: &str) -> Result<ParseItem, ProposeOutcome> {
+        match items.len() {
+            1 => Ok(items[0].clone()),
+            _ => items
+                .iter()
+                .find(|i| i.sku == "BRK-100")
+                .cloned()
+                .ok_or_else(|| ProposeOutcome::Clarification {
+                    prompt: prompt.to_string(),
+                    question: "Which item? The prompt doesn't say and I won't guess.".to_string(),
+                }),
+        }
+    }
+
+    /// The amount slot, parsed exactly (rule 1): absent → `None`
+    /// (the caller clarifies); present but not exact to the cent →
+    /// a refusal outcome.
+    fn amount_slot(&self, intent: &Intent, prompt: &str) -> Result<Option<i64>, ProposeOutcome> {
+        money_slot(&intent.amount).map_err(|e| ProposeOutcome::Refusal {
+            prompt: prompt.to_string(),
+            message: e.to_string(),
+        })
+    }
+
+    fn fulfilled_order_for(
+        &self,
+        conn: &mut Connection,
+        customer_id: i64,
+        total: i64,
+        invoices: &[Value],
+    ) -> Result<Option<i64>, AgentError> {
+        let invoiced_orders: Vec<i64> = invoices.iter().map(|i| j_i64(i, "order_id")).collect();
+        let orders = self.call(conn, "list_orders", &json!({}))?;
+        Ok(orders
+            .as_array()
+            .and_then(|rows| {
+                rows.iter().find(|o| {
+                    j_i64(o, "customer_id") == customer_id
+                        && j_str(o, "status") == "fulfilled"
+                        && j_i64(o, "total_cents") == total
+                        && !invoiced_orders.contains(&j_i64(o, "id"))
+                })
+            })
+            .map(|o| j_i64(o, "id")))
+    }
+
+    /// The builder duplicate scan (rule 6): a posted entry with the
+    /// same two accounts, the same amount and the same date.
+    fn duplicate_entry(
+        &self,
+        conn: &mut Connection,
+        debit: &str,
+        credit: &str,
+        amount: i64,
+        entry_date: &str,
+    ) -> Result<Option<i64>, AgentError> {
+        let entries = self.call(conn, "list_entries", &json!({}))?;
+        Ok(entries.as_array().and_then(|rows| {
+            rows.iter()
+                .find(|e| {
+                    j_str(e, "entry_date") == entry_date
+                        && j_str(e, "status") == "posted"
+                        && e.get("lines").and_then(|v| v.as_array()).map(|lines| {
+                            lines.len() == 2
+                                && lines.iter().any(|l| {
+                                    j_str(l, "account_code") == debit
+                                        && j_i64(l, "debit_cents") == amount
+                                })
+                                && lines.iter().any(|l| {
+                                    j_str(l, "account_code") == credit
+                                        && j_i64(l, "credit_cents") == amount
+                                })
+                        }) == Some(true)
+                })
+                .map(|e| j_i64(e, "id"))
+        }))
+    }
+
+    /// One dispatch call with the agent's error mapping: an internal
+    /// failure is an error; a core refusal becomes
+    /// [`AgentError::CoreRefusal`], which `propose` renders as a
+    /// refusal outcome in the core's own words.
+    fn call(&self, conn: &mut Connection, name: &str, args: &Value) -> Result<Value, AgentError> {
+        dispatch(conn, Door::Agent, name, args).map_err(|e| {
+            if e.internal {
+                AgentError::Dispatch(e)
+            } else {
+                AgentError::CoreRefusal(e.message)
+            }
+        })
+    }
+
+    // -- Confirmation rendering ---------------------------------------
+
+    /// Render the confirmation from the proposed calls and core data
+    /// (account names and types from the ledger) — the model's prose
+    /// is never involved. Signs follow each account's normal balance:
+    /// a credit to Revenue reads +, a credit to Finished Goods −.
+    fn render(
+        &self,
+        conn: &mut Connection,
+        headline: &str,
+        sublines: &[String],
+        lines: &[ConfirmLine],
+    ) -> Result<String, AgentError> {
+        let mut accounts: HashMap<String, (String, String)> = HashMap::new();
+        for line in lines {
+            if !accounts.contains_key(&line.code) {
+                let ledger = self.call(conn, "account_ledger", &json!({ "code": line.code }))?;
+                accounts.insert(
+                    line.code.clone(),
+                    (
+                        j_str(&ledger, "name").to_string(),
+                        j_str(&ledger, "account_type").to_string(),
+                    ),
+                );
+            }
+        }
+        let mut out = String::new();
+        out.push_str(headline);
+        out.push('\n');
+        for sub in sublines {
+            out.push_str(sub);
+            out.push('\n');
+        }
+        let mut total_debits: i64 = 0;
+        let mut total_credits: i64 = 0;
+        for line in lines {
+            total_debits += line.debit;
+            total_credits += line.credit;
+            let (name, account_type) = &accounts[&line.code];
+            let delta = if debit_normal(account_type) {
+                line.debit - line.credit
+            } else {
+                line.credit - line.debit
+            };
+            let sign = if delta < 0 { "-" } else { "+" };
+            out.push_str(&format!("- {name} {sign}{}", fmt_cents(delta.abs())));
+            if let Some(note) = &line.note {
+                out.push_str(&format!(" ({note})"));
+            }
+            out.push('\n');
+        }
+        if total_debits == total_credits {
+            out.push_str(&format!(
+                "Total debits {} = total credits {} ✓",
+                fmt_cents(total_debits),
+                fmt_cents(total_credits)
+            ));
+        } else {
+            out.push_str(&format!(
+                "Total debits {} ≠ total credits {} — this cannot post",
+                fmt_cents(total_debits),
+                fmt_cents(total_credits)
+            ));
+        }
+        out.push_str("\n[Confirm] [Edit] [Cancel]");
+        Ok(out)
+    }
+}
+
+struct ConfirmLine {
+    code: String,
+    debit: i64,
+    credit: i64,
+    note: Option<String>,
+}
+
+fn debit_normal(account_type: &str) -> bool {
+    matches!(account_type, "asset" | "expense" | "contra_revenue")
+}
+
+fn builder_summary(name: &str, intent: &Intent, customer: Option<&str>) -> String {
+    match name {
+        "buy_materials" => match &intent.supplier {
+            Some(s) => format!("Buy materials on credit (the {s})"),
+            None => "Buy materials on credit".to_string(),
+        },
+        "pay_supplier" => match &intent.supplier {
+            Some(s) => format!("Pay supplier (the {s})"),
+            None => "Pay supplier".to_string(),
+        },
+        "issue_materials" => "Issue materials to production".to_string(),
+        "record_labor" => "Record direct labor".to_string(),
+        "complete_production" => match intent.qty {
+            Some(q) => format!("Complete production ({q} brackets)"),
+            None => "Complete production".to_string(),
+        },
+        "record_deposit" => match customer {
+            Some(c) => format!("Record customer deposit ({c})"),
+            None => "Record customer deposit".to_string(),
+        },
+        "record_rent" => "Record rent".to_string(),
+        "record_interest" => "Record interest".to_string(),
+        "record_depreciation" => "Record depreciation".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn builder_headline(name: &str, intent: &Intent, amount: i64, customer: Option<&str>) -> String {
+    let amount = fmt_cents(amount);
+    match name {
+        "buy_materials" => format!("Buy {amount} of raw materials on credit"),
+        "pay_supplier" => match &intent.supplier {
+            Some(s) => format!("Pay {amount} to the {s} against what we owe"),
+            None => format!("Pay {amount} to the supplier against what we owe"),
+        },
+        "issue_materials" => format!("Issue {amount} of raw materials to production"),
+        "record_labor" => format!("Pay {amount} wages for production work"),
+        "complete_production" => match intent.qty {
+            Some(q) => format!("Complete production — {q} brackets finished, cost {amount}"),
+            None => format!("Complete production — cost {amount}"),
+        },
+        "record_deposit" => match customer {
+            Some(c) => format!("{c} sent a {amount} deposit for a future order"),
+            None => format!("Record a customer deposit of {amount}"),
+        },
+        "record_rent" => format!("Record rent of {amount}"),
+        "record_interest" => format!("Record loan interest of {amount}"),
+        "record_depreciation" => format!("Record depreciation of {amount}"),
+        _ => format!("{name}: {amount}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Intent JSON, money, dates
+// ---------------------------------------------------------------------------
+
+/// The model's structured answer. Every field is optional in the
+/// JSON so a partial parse reaches the adapter, which — not the
+/// model — decides what is missing (clarify), wrong (refuse) or fine.
+#[derive(Debug, Default, Deserialize)]
+struct Intent {
+    #[serde(default)]
+    intent: String,
+    #[serde(default)]
+    customer: Option<String>,
+    #[serde(default)]
+    supplier: Option<String>,
+    #[serde(default)]
+    qty: Option<i64>,
+    #[serde(default)]
+    amount: Option<Value>,
+    #[serde(default)]
+    price_each: Option<Value>,
+    #[serde(default)]
+    day: Option<String>,
+    #[serde(default)]
+    topic: Option<String>,
+}
+
+/// Extract the intent object from the model's raw reply: the first
+/// `{` to the last `}` (models wrap JSON in fences and prose; the
+/// adapter accepts the object and ignores the wrapping).
+fn parse_intent_json(raw: &str) -> Option<Intent> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    serde_json::from_str(&raw[start..=end]).ok()
+}
+
+/// A money slot: strings are parsed exactly as written; a bare JSON
+/// number is read through its shortest decimal form, so the same
+/// exactness rule applies either way. Absent → `None`; present but
+/// not exact to the cent → an error the adapter turns into a refusal.
+fn money_slot(slot: &Option<Value>) -> Result<Option<i64>, AgentError> {
+    match slot {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => parse_money_cents(s).map(Some).map_err(AgentError::Model),
+        Some(Value::Number(n)) => parse_money_cents(&n.to_string())
+            .map(Some)
+            .map_err(AgentError::Model),
+        Some(_) => Err(AgentError::Model(
+            "the amount was not a money value".to_string(),
+        )),
+    }
+}
+
+/// Rule 1: integer cents, exact parse or rejection. "$5,000.00" →
+/// 500000; a third decimal place, a stray letter, or an empty string
+/// is a rejection, never a rounding.
+pub fn parse_money_cents(raw: &str) -> Result<i64, String> {
+    let trimmed = raw.trim();
+    let body = trimmed.strip_prefix('$').unwrap_or(trimmed).trim();
+    let digits: String = body.chars().filter(|c| *c != ',').collect();
+    let (int_part, frac_part) = match digits.split_once('.') {
+        Some((a, b)) => (a, b),
+        None => (digits.as_str(), ""),
+    };
+    if int_part.is_empty() || !int_part.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("\"{raw}\" is not an amount I can parse exactly"));
+    }
+    if frac_part.len() > 2 || !frac_part.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "\"{raw}\" is not exact to the cent — I won't round money"
+        ));
+    }
+    let dollars: i64 = int_part
+        .parse()
+        .map_err(|_| format!("\"{raw}\" is too large to be an amount"))?;
+    let frac: i64 = format!("{frac_part:0<2}").parse().unwrap_or(0);
+    Ok(dollars * 100 + frac)
+}
+
+/// Money display: two decimals, thousands separators (`$5,000.00`).
+pub fn fmt_cents(cents: i64) -> String {
+    let sign = if cents < 0 { "-" } else { "" };
+    let abs = cents.unsigned_abs();
+    let digits = (abs / 100).to_string();
+    let mut grouped = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    format!("{sign}${grouped}.{:02}", abs % 100)
+}
+
+/// Resolve a stated day against the demo day (rule 3): "today" or no
+/// day → today; a weekday name → its most recent occurrence,
+/// including today; a full `YYYY-MM-DD` → itself. The resolved date
+/// is shown in the confirmation and passed as the builders'
+/// `entry_date`, so the display and the posting can never disagree.
+pub fn resolve_day(today: &str, day: Option<&str>) -> Result<String, String> {
+    let Some(day) = day.map(|d| d.trim()).filter(|d| !d.is_empty()) else {
+        return Ok(today.to_string());
+    };
+    if day.eq_ignore_ascii_case("today") {
+        return Ok(today.to_string());
+    }
+    if parse_date(day).is_some() {
+        return Ok(day.to_string());
+    }
+    let target = match day.to_lowercase().as_str() {
+        "sunday" => 0,
+        "monday" => 1,
+        "tuesday" => 2,
+        "wednesday" => 3,
+        "thursday" => 4,
+        "friday" => 5,
+        "saturday" => 6,
+        _ => {
+            return Err(format!(
+                "Which day did you mean by \"{day}\"? Name a weekday or a date."
+            ))
+        }
+    };
+    let (y, m, d) = parse_date(today)
+        .ok_or_else(|| format!("the demo day \"{today}\" is not a YYYY-MM-DD date"))?;
+    let days = days_from_civil(y, m, d);
+    let today_weekday = (days + 4).rem_euclid(7); // 1970-01-01 was a Thursday; 0 = Sunday
+    let back = (today_weekday - target).rem_euclid(7);
+    Ok(civil_from_days(days - back))
+}
+
+/// Today (UTC) as `YYYY-MM-DD` — the CLI door's default demo day.
+pub fn today_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    civil_from_days((secs / 86_400) as i64)
+}
+
+fn parse_date(text: &str) -> Option<(i64, u32, u32)> {
+    let mut parts = text.split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// Howard Hinnant's days-from-civil / civil-from-days, the same
+/// algorithm the dispatch layer uses for its UTC default date.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y_adj = if m <= 2 { y - 1 } else { y };
+    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+    let yoe = y_adj - era * 400;
+    let mp = if m > 2 { m as i64 - 3 } else { m as i64 + 9 };
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z: i64) -> String {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+// JSON field accessors over dispatch results.
+fn j_i64(value: &Value, key: &str) -> i64 {
+    value.get(key).and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+fn j_str<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn money_parses_exactly_or_not_at_all() {
+        assert_eq!(parse_money_cents("$5,000.00").unwrap(), 500_000);
+        assert_eq!(parse_money_cents("$3,125").unwrap(), 312_500);
+        assert_eq!(parse_money_cents("1200").unwrap(), 120_000);
+        assert_eq!(parse_money_cents("$1.5").unwrap(), 150);
+        assert!(
+            parse_money_cents("$1.234").is_err(),
+            "a third decimal is a rejection"
+        );
+        assert!(parse_money_cents("abc").is_err());
+        assert!(parse_money_cents("").is_err());
+        assert!(parse_money_cents("$").is_err());
+    }
+
+    #[test]
+    fn money_formats_with_separators_and_two_decimals() {
+        assert_eq!(fmt_cents(500_000), "$5,000.00");
+        assert_eq!(fmt_cents(772_000), "$7,720.00");
+        assert_eq!(fmt_cents(150), "$1.50");
+        assert_eq!(fmt_cents(-272_000), "-$2,720.00");
+        assert_eq!(fmt_cents(0), "$0.00");
+    }
+
+    #[test]
+    fn relative_days_resolve_against_the_demo_day() {
+        // Friday 2026-10-30: Tuesday was the 27th.
+        assert_eq!(
+            resolve_day("2026-10-30", Some("Tuesday")).unwrap(),
+            "2026-10-27"
+        );
+        assert_eq!(
+            resolve_day("2026-10-30", Some("Friday")).unwrap(),
+            "2026-10-30"
+        );
+        assert_eq!(
+            resolve_day("2026-10-30", Some("today")).unwrap(),
+            "2026-10-30"
+        );
+        assert_eq!(resolve_day("2026-10-30", None).unwrap(), "2026-10-30");
+        assert_eq!(
+            resolve_day("2026-10-30", Some("2026-10-01")).unwrap(),
+            "2026-10-01"
+        );
+        assert!(resolve_day("2026-10-30", Some("next week")).is_err());
+    }
+
+    #[test]
+    fn civil_math_round_trips() {
+        for (y, m, d) in [(1970, 1, 1), (2024, 1, 1), (2026, 10, 30), (2000, 2, 29)] {
+            let days = days_from_civil(y, m, d);
+            assert_eq!(civil_from_days(days), format!("{y:04}-{m:02}-{d:02}"));
+        }
+    }
+}

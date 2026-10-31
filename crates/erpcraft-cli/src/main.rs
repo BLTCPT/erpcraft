@@ -9,11 +9,16 @@
 //! positional value for the command's primary argument (an id, or the
 //! account code for `account_ledger`).
 
+use erpcraft_cli::agent::clients::{
+    FallbackClient, ModelClient, OpenAiChatClient, RecordedClient, StubClient,
+};
+use erpcraft_cli::agent::{today_utc, Agent, Proposal, ProposeOutcome};
 use erpcraft_cli::commands::{
     all_specs, dispatch, open_door_db, spec_for, CommandSpec, DispatchError, Door,
 };
 use erpcraft_cli::mcp;
 use serde_json::{json, Map, Value};
+use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -24,6 +29,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("mcp") => mcp::serve(),
+        Some("agent") => run_agent(&argv[1..]),
         Some(name) => run(name, &argv[1..]),
     }
 }
@@ -41,7 +47,7 @@ fn print_help() {
         .collect();
     let doc = json!({
         "name": "erpcraft",
-        "contract": "JSON on stdout; plain-language refusals on stderr; exit 0 ok / 1 refused or invalid / 2 internal error. Database: ERPCRAFT_DB env (default erpcraft.db). 'erpcraft mcp' serves these same commands as MCP tools on stdio.",
+        "contract": "JSON on stdout; plain-language refusals on stderr; exit 0 ok / 1 refused or invalid / 2 internal error. Database: ERPCRAFT_DB env (default erpcraft.db). 'erpcraft mcp' serves these same commands as MCP tools on stdio. 'erpcraft agent \"<prompt>\"' runs the natural-language agent over this table (propose → confirm → post; --client stub|recorded|baseten|meta).",
         "commands": commands,
     });
     println!(
@@ -177,4 +183,261 @@ fn parse_scalar(raw: &str) -> Value {
         Ok(Value::String(s)) => Value::String(s),
         _ => Value::String(raw.to_string()),
     }
+}
+
+/// The Day-5 agent door: `erpcraft agent [--client stub|recorded|baseten|meta]
+/// [--fixture <path>] [--yes] "<prompt>"`.
+///
+/// The agent proposes; the operator confirms at the prompt (or with
+/// an explicit `--yes`, which still prints the confirmation first);
+/// only then does anything post. Clients: `stub` (deterministic,
+/// offline — the default), `recorded` (replay a captured exchange
+/// from --fixture / ERPCRAFT_AGENT_FIXTURE), `baseten` and `meta`
+/// (live; key from BASETEN_API_KEY / META_MODEL_API_KEY). The live
+/// routes fall back to the recorded fixture when one is configured
+/// and the API does not answer (spec test 12).
+fn run_agent(tokens: &[String]) -> ExitCode {
+    let mut client_kind = "stub".to_string();
+    let mut fixture: Option<String> = std::env::var("ERPCRAFT_AGENT_FIXTURE").ok();
+    let mut auto_yes = false;
+    let mut print_request = false;
+    let mut words: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "--client" => {
+                i += 1;
+                match tokens.get(i) {
+                    Some(v) => client_kind = v.clone(),
+                    None => {
+                        eprintln!("--client needs a value: stub, recorded, baseten or meta");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            "--fixture" => {
+                i += 1;
+                match tokens.get(i) {
+                    Some(v) => fixture = Some(v.clone()),
+                    None => {
+                        eprintln!("--fixture needs a path to a recorded-response fixture");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            "--yes" => auto_yes = true,
+            "--print-parse-request" => print_request = true,
+            other => words.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let prompt = words.join(" ");
+    if prompt.trim().is_empty() {
+        eprintln!(
+            "usage: erpcraft agent [--client stub|recorded|baseten|meta] [--fixture <path>] [--yes] \"<prompt>\""
+        );
+        return ExitCode::from(1);
+    }
+    let mut conn = match open_door_db() {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("{}", e.message);
+            return ExitCode::from(2);
+        }
+    };
+
+    if print_request {
+        // The exact messages the live routes send — used to record a
+        // genuine exchange for the demo fallback fixture.
+        let request = match agent_parse_request(&mut conn, &prompt) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(2);
+            }
+        };
+        let (system, user) = erpcraft_cli::agent::clients::render_parse_messages(&request);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "prompt": prompt,
+                "system": system,
+                "user": user,
+            }))
+            .unwrap_or_else(|_| "{}".to_string())
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    let recorded = match &fixture {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(text) => match RecordedClient::from_json(&text) {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    eprintln!("recorded fixture {path}: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            Err(e) => {
+                eprintln!("cannot read recorded fixture {path}: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
+
+    // Box the chosen client stack behind the trait.
+    let client: Box<dyn ModelClient> = match client_kind.as_str() {
+        "stub" => Box::new(StubClient),
+        "recorded" => match recorded {
+            Some(client) => Box::new(client),
+            None => {
+                eprintln!(
+                    "--client recorded needs a fixture (--fixture <path> or ERPCRAFT_AGENT_FIXTURE)"
+                );
+                return ExitCode::from(1);
+            }
+        },
+        "baseten" | "meta" => {
+            let live = if client_kind == "baseten" {
+                OpenAiChatClient::baseten_from_env()
+            } else {
+                OpenAiChatClient::meta_from_env()
+            };
+            match (live, recorded) {
+                (Some(live), Some(rec)) => Box::new(FallbackClient::new(live, rec)),
+                (Some(live), None) => Box::new(live),
+                (None, _) => {
+                    let var = if client_kind == "baseten" {
+                        "BASETEN_API_KEY"
+                    } else {
+                        "META_MODEL_API_KEY"
+                    };
+                    eprintln!(
+                        "{var} is not set — the live {client_kind} route needs the operator's key in the environment"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        other => {
+            eprintln!("unknown --client '{other}': stub, recorded, baseten or meta");
+            return ExitCode::from(1);
+        }
+    };
+
+    let agent = Agent::new(client, today_utc());
+    match agent.propose(&mut conn, &prompt) {
+        Ok(ProposeOutcome::NeedsConfirmation(proposal)) => {
+            confirm_and_post(&mut conn, &proposal, auto_yes)
+        }
+        Ok(ProposeOutcome::Clarification { question, .. }) => {
+            println!("{question}");
+            ExitCode::SUCCESS
+        }
+        Ok(ProposeOutcome::Refusal { message, .. })
+        | Ok(ProposeOutcome::OutOfScope { message, .. }) => {
+            println!("{message}");
+            ExitCode::from(1)
+        }
+        Ok(ProposeOutcome::PriceConflict { question, .. }) => {
+            println!("{question}");
+            ExitCode::SUCCESS
+        }
+        Ok(ProposeOutcome::DuplicateWarning { warning, .. }) => {
+            println!("{warning}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Print the confirmation, take the human's answer, and only then
+/// post. This is the contract's gate, at the terminal.
+fn confirm_and_post(
+    conn: &mut erpcraft_core::rusqlite::Connection,
+    proposal: &Proposal,
+    auto_yes: bool,
+) -> ExitCode {
+    if let Some(warning) = &proposal.duplicate_warning {
+        println!("{warning}");
+    }
+    println!("{}", proposal.confirmation_text);
+    let confirmed = if auto_yes {
+        println!("(--yes given — posting.)");
+        true
+    } else {
+        print!("Confirm? [y/N] ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(_) => matches!(line.trim().to_lowercase().as_str(), "y" | "yes"),
+            Err(_) => false,
+        }
+    };
+    if !confirmed {
+        println!("{}", proposal.cancel_message());
+        return ExitCode::SUCCESS;
+    }
+    match proposal.confirm(conn) {
+        Ok(result) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Gather the parse-request context through the dispatch reads, the
+/// same numbers the adapter itself uses.
+fn agent_parse_request(
+    conn: &mut erpcraft_core::rusqlite::Connection,
+    prompt: &str,
+) -> Result<erpcraft_cli::agent::ParseRequest, String> {
+    let mut read = |name: &str| -> Result<Value, String> {
+        dispatch(conn, Door::Cli, name, &json!({})).map_err(|e| e.message)
+    };
+    let customers = read("list_customers")?;
+    let items = read("list_items")?;
+    let invoices = read("list_invoices")?;
+    let arr = |v: &Value| v.as_array().cloned().unwrap_or_default();
+    let gi = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
+    let gs = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    Ok(erpcraft_cli::agent::ParseRequest {
+        prompt: prompt.to_string(),
+        today: today_utc(),
+        customers: arr(&customers).iter().map(|c| gs(c, "name")).collect(),
+        items: arr(&items)
+            .iter()
+            .map(|i| erpcraft_cli::agent::ParseItem {
+                id: gi(i, "id"),
+                sku: gs(i, "sku"),
+                name: gs(i, "name"),
+                unit_price_cents: gi(i, "unit_price_cents"),
+                standard_cost_cents: gi(i, "standard_cost_cents"),
+            })
+            .collect(),
+        open_invoices: arr(&invoices)
+            .iter()
+            .filter(|inv| {
+                matches!(gs(inv, "status").as_str(), "issued" | "partially_paid")
+                    && gi(inv, "balance_cents") > 0
+            })
+            .map(|inv| erpcraft_cli::agent::ParseInvoice {
+                id: gi(inv, "id"),
+                customer_name: gs(inv, "customer_name"),
+                total_cents: gi(inv, "total_cents"),
+                balance_cents: gi(inv, "balance_cents"),
+            })
+            .collect(),
+    })
 }
