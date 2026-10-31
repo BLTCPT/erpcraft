@@ -1,0 +1,37 @@
+{
+ "id": "p2p_held_refusal",
+ "prompt": "Pay AP invoice 1.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-27bfab9abc3b44f99899f645a43725b2",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Pay AP invoice 1.\n\nWe have rules: Paying one specific supplier invoice is pay_ap_invoice \u2014 not pay_supplier. Include ap_invoice_id when prompt names one (\"AP invoice 3\"), supplier (copied exactly) when it names supplier, and amount only when prompt states one (no amount means full balance). If prompt insists on paying despite three-way-match hold (\"pay it anyway\"), also include override_reason \u2014 justification exactly as stated \u2014 and overrider \u2014 person prompt names as approving it. Without both, held invoice cannot be proposed for payment. Parse payment same way whether or not context shows invoice on match hold \u2014 adapter surfaces holds itself; hold is never reason to answer unclear.\n\nSo we have open AP invoices: #1 Harbor Components \u2014 total $650, balance $650 (ON THREE-WAY-MATCH HOLD)\n\nPrompt: Pay AP invoice 1.\n\nWe should return {\"intent\": \"pay_ap_invoice\", \"ap_invoice_id\": 1}\n\nBut need to consider supplier? Prompt doesn't name supplier, but we could infer? Rules say include supplier when prompt names supplier. Prompt doesn't name supplier, so omit.\n\nAmount? No amount stated, so omit (means full balance).\n\nOverride? No override reason given. So just pay_ap_invoice with id 1. Even though on hold, we still parse it. Adapter will handle hold.\n\nWe must return exactly JSON shape. Need to ensure fields: intent, ap_invoice_id.\n\nNo other fields.\n\nWe must not add prose.\n\nReturn {\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1}\n\nCheck spec: example shape includes many fields but we omit those not apply. So just those two.\n\nWe must ensure correct JSON.\n\nWe should not include supplier even though we know it? The rule says include supplier when prompt names supplier. Prompt doesn't. So omit.\n\nThus final answer is JSON.\n\nWe must not add reasoning.\n\nWe need to emit JSON immediately.\n\nPotential nuance: Should we include supplier inferred? No.\n\nThus output: {\"intent\": \"pay_ap_invoice\", \"ap_invoice_id\": 1}\n\nMake sure formatting correct.\n\nWe must not add extra fields like amount.\n\nWe should ensure integer.\n\nReturn exactly that.\n\nWe must not add commentary.\n\nWe are parsing layer.\n\nThus final."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465194,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1040,
+   "completion_tokens": 485,
+   "total_tokens": 1525,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 350,
+    "audio_tokens": 0,
+    "reasoning_tokens": 462,
+    "rejected_prediction_tokens": 595
+   }
+  }
+ }
+}

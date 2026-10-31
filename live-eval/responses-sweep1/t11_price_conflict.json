@@ -1,0 +1,37 @@
+{
+ "id": "t11_price_conflict",
+ "prompt": "Invoice Acme for 40 units at $130 each.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-3f45c37d66c84b1e9707f5ed4429057a",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Invoice Acme for 40 units at $130 each.\n\nWe need to return JSON with intent invoice_shipment, customer Acme, qty 40, price_each $130 each? The spec says price_each only when prompt states per-unit price (\"at $130 each\"). Copy money exactly as written. So price_each should be \"$130\" ? Or \"$130 each\"? The example says amount stays \"$3,125\". But price_each? The spec says price_each only when prompt states per-unit price (\"at $130 each\"). Probably copy as \"$130\" or \"$130 each\"? Need to check shape: price_each: \"...\". Likely include as \"$130\". But we should copy exactly as written: \"$130\". The prompt says \"at $130 each.\" So price_each is \"$130\". Could also be \"$130 each\". Let's see typical ERP: price_each is money string. Probably \"$130\". Let's check other fields: sku? Prompt says 40 units but doesn't say SKU. Items: BRK-100 Finished Bracket \u2014 price $125.00. But prompt doesn't explicitly say BRK-100. Should we infer sku? The rules: sku when it names an item. Prompt says \"40 units\" not naming BRK-100. So we should not include sku? However maybe we should infer? The spec says sku when it names an item. It doesn't name. So omit sku. But maybe we need to include? Let's see typical tasks: Invoice Acme for 40 units at $130 each. Could be ambiguous but we have only one item BRK-100. However rule says copy sku exactly when prompt states. So we should not invent sku.\n\nAlso need day? No.\n\nIntent invoice_shipment.\n\nWe need to return exactly JSON object.\n\nFields: intent, customer, qty, price_each.\n\nAlso amount? No, amount is total. Not needed.\n\nWe should include qty 40, customer Acme, price_each \"$130\" or \"$130 each\"? Let's check spec: \"Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\" So money exactly as written. Prompt says \"$130\". So price_each \"$130\".\n\nShould we include amount? No.\n\nReturn JSON.\n\nWe must ensure valid JSON.\n\nWe should not include extra fields.\n\nSo output: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}\n\nCheck if need sku? Could add sku BRK-100? But rule says omit fields that do not apply. If prompt doesn't state sku, omit. So we omit.\n\nWe should also consider day? No.\n\nThus final answer is that JSON.\n\nWe must not add prose.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464924,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 964,
+   "completion_tokens": 602,
+   "total_tokens": 1566,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 427,
+    "audio_tokens": 0,
+    "reasoning_tokens": 570,
+    "rejected_prediction_tokens": 798
+   }
+  }
+ }
+}

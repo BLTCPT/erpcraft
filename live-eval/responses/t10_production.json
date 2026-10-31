@@ -1,0 +1,37 @@
+{
+ "id": "t10_production",
+ "prompt": "We finished 50 brackets today, cost $4,100.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-f459a4f950d741f99dc6821cc89854d6",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"complete_production\",\"qty\":50,\"amount\":\"$4,100\",\"day\":\"today\",\"sku\":\"BRK-100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"We finished 50 brackets today, cost $4,100.\"\n\nWe need to output JSON with intent.\n\nWe have intents: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice. Anything else out_of_scope.\n\nWe finished 50 brackets today, cost $4,100.\n\nThis is complete_production. Need to map fields.\n\nShape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nRules: Copy customer names and money exactly as written. qty is unit count as integer when prompt states one. price_each only when prompt states per-unit price. day is weekday name as written or \"today\".\n\nFor complete_production: likely need sku, qty, amount? Let's see examples. Not given but we can infer.\n\nWe have Items: BRK-100 Finished Bracket \u2014 price $125.00, standard cost $68.00\n\nPrompt: We finished 50 brackets today, cost $4,100.\n\nWe need to map qty=50, amount=\"$4,100\" ? Or maybe amount is cost. sku = \"BRK-100\" ? Need to copy exactly. The item is BRK-100 Finished Bracket. SKU likely BRK-100.\n\nCheck other intents: record_deposit etc amount.\n\nFor complete_production, likely fields: sku, qty, amount, day.\n\nDay = \"today\" because prompt says today.\n\nWe should include sku: \"BRK-100\" . qty: 50 . amount: \"$4,100\" . day: \"today\" . intent: \"complete_production\"\n\nWe must ensure JSON shape exactly. Omit fields that do not apply.\n\nWe should not include customer, supplier, etc.\n\nWe need to return exactly JSON object.\n\nWe must not add prose.\n\nWe need to consider if amount should be copied exactly as \"$4,100.\" includes comma. Yes.\n\nWe should output: {\"intent\":\"complete_production\",\"qty\":50,\"amount\":\"$4,100\",\"day\":\"today\",\"sku\":\"BRK-100\"}\n\nBut need to check if sku should be \"BRK-100\" or \"BRK-100 Finished Bracket\"? The spec says sku copied exactly. Items: BRK-100 Finished Bracket \u2014 price $125.00. Likely sku is BRK-100. Could be BRK-100. We'll use BRK-100.\n\nCheck other possibilities: maybe need to include configuration? No.\n\nWe should ensure qty integer.\n\nWe should not include price_each.\n\nWe should include day \"today\".\n\nWe must ensure JSON valid.\n\nWe should not deliberate over omitted fields.\n\nWe need to emit JSON immediately.\n\nWe should consider if amount field is correct for complete_production. Could be amount is cost. Yes.\n\nWe should output that.\n\nWe must not add extra fields like topic.\n\nWe should ensure intent is complete_production.\n\nWe should not output out_of_scope.\n\nWe should ensure we follow rules: Copy customer names and money exactly as written (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nWe have \"$4,100\" stays \"$4,100\".\n\nWe should output JSON.\n\nWe need to ensure we don't include order_id etc.\n\nWe should produce final answer.\n\nWe need to consider if we need to include supplier none? No.\n\nWe should output minimal JSON.\n\nPotential nuance: The prompt says \"We finished 50 brackets today, cost $4,100.\" Could be interpreted as complete_production with qty 50, amount $4,100, day today, sku BRK-100.\n\nWe should do that.\n\nWe must not add commentary.\n\nWe should return exactly this shape.\n\nWe should ensure we use double quotes.\n\nWe should not include trailing comma.\n\nWe should output: {\"intent\":\"complete_production\",\"qty\":50,\"amount\":\"$4,100\",\"day\":\"today\",\"sku\":\"BRK-100\"}\n\nCheck if day should be \"today\" lower case. Yes.\n\nWe should ensure we include sku.\n\nWe should finalize.\n\nWe must not add extra explanation.\n\nWe should output JSON object.\n\nWe should ensure we follow system instruction: Return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields.\n\nWe should do that.\n\nWe should not include reasoning.\n\nWe should output JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465149,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1015,
+   "completion_tokens": 1051,
+   "total_tokens": 2066,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 797,
+    "audio_tokens": 0,
+    "reasoning_tokens": 1012,
+    "rejected_prediction_tokens": 988
+   }
+  }
+ }
+}

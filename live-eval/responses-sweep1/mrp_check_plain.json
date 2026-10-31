@@ -1,0 +1,37 @@
+{
+ "id": "mrp_check_plain",
+ "prompt": "What are we short on?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-7f46317470a943de93419c647757b554",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"What are we short on?\" This is planning question mrp_check plain.\n\nIntent mrp_check, no other fields.\n\nWe must return JSON exactly shape.\n\nRules: Planning questions are mrp_check: \"What are we short on?\" is a plain {\"intent\": \"mrp_check\"}\n\nSo output {\"intent\":\"mrp_check\"}\n\nWe must ensure no extra fields.\n\nWe are parsing layer, return JSON object and nothing else.\n\nWe should not include topic etc.\n\nJust {\"intent\":\"mrp_check\"}\n\nCheck spec: Return exactly this shape, omitting fields that do not apply. So minimal.\n\nWe should output that.\n\nNo need for customer etc.\n\nWe must ensure valid JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464942,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1041,
+   "completion_tokens": 161,
+   "total_tokens": 1202,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 110,
+    "audio_tokens": 0,
+    "reasoning_tokens": 144,
+    "rejected_prediction_tokens": 247
+   }
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "id": "t11_price_conflict",
+ "prompt": "Invoice Acme for 40 units at $130 each.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-a0da1cbe35f0447b841e76b6136b5849",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Invoice Acme for 40 units at $130 each.\n\nWe need to return JSON with intent invoice_shipment, customer Acme, qty 40, price_each $130, sku? The prompt says 40 units at $130 each. But does it specify SKU? It says Invoice Acme for 40 units at $130 each. No SKU mentioned explicitly. However items: BRK-100 Finished Bracket \u2014 price $125.00. But prompt doesn't say BRK-100. Should we include sku? The rules: sku when it names an item. It didn't name item. So omit sku? But maybe we should infer? The instruction says copy customer names and money exactly as written. qty is unit count as integer when prompt states one. price_each only when prompt states per-unit price (\"at $130 each\"). day is weekday name as written or \"today\". So we have customer Acme, qty 40, price_each \"$130\" ? Need to copy exactly as written: \"$130\" or \"$130 each\"? The example says \"$3,125\" stays \"$3,125\". Never convert money to number, never round it. So amount and price_each should be exactly as written. Prompt says \"at $130 each.\" So price_each should be \"$130\". Or \"$130 each\"? The spec says price_each only when prompt states per-unit price (\"at $130 each\"). So likely value is \"$130\". Need to check typical format. Probably \"$130\". Could be \"$130 each\" but spec says copy money exactly as written (\"$3,125\" stays \"$3,125\"). So we should extract \"$130\". Not include \"each\".\n\nAlso need amount? No amount stated, only price_each. So amount omitted.\n\nIntent invoice_shipment.\n\nWe must return exactly JSON object and nothing else \u2014 no prose, no journal lines. The adapter validates everything and renders confirmation from ledger, never from your text.\n\nReturn exactly shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo output: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}\n\nShould we include sku? The prompt doesn't state SKU. So omit.\n\nCheck other fields: day? No.\n\nWe must ensure JSON valid.\n\nWe should not include supplier, amount, etc.\n\nThus final answer is that JSON.\n\nWe must not add extra fields.\n\nMake sure to follow spec: intent invoice_shipment, customer Acme, qty 40, price_each \"$130\"\n\nPotentially need to include sku BRK-100? But rule says sku when it names an item. It didn't. So omit.\n\nReturn exactly that.\n\nWe must not add commentary.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465153,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1014,
+   "completion_tokens": 591,
+   "total_tokens": 1605,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 433,
+    "audio_tokens": 0,
+    "reasoning_tokens": 559,
+    "rejected_prediction_tokens": 673
+   }
+  }
+ }
+}

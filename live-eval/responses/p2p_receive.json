@@ -1,0 +1,37 @@
+{
+ "id": "p2p_receive",
+ "prompt": "Receive 10 BRK-100 against purchase order 1.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-e0f8bce025754dc682b7a70afa69b1f5",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"receive_goods\",\"order_id\":1,\"sku\":\"BRK-100\",\"qty\":10}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Receive 10 BRK-100 against purchase order 1.\n\nWe need to return JSON with intent receive_goods, order_id, sku, qty.\n\nRules:\n- Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope): include \"order_id\" when the prompt names the order number, \"supplier\" (copied exactly) when it names the supplier, \"sku\" when it names an item, and \"qty\" when it states how many arrived. Omit what the prompt does not state \u2014 never invent an id.\n\nPrompt: Receive 10 BRK-100 against purchase order 1.\n\nSo qty 10, sku BRK-100, order_id 1.\n\nWe should output:\n{\"intent\":\"receive_goods\",\"order_id\":1,\"sku\":\"BRK-100\",\"qty\":10}\n\nCheck shape: need to omit fields that do not apply. Should we include supplier? No supplier mentioned.\n\nWe must ensure JSON exactly shape. The spec says return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields:\n{\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nSo we should output intent receive_goods, qty, sku, order_id.\n\nNo amount, no supplier.\n\nMake sure qty is integer.\n\nWe should not include extra fields.\n\nReturn exactly JSON object.\n\nPotential nuance: Should we include supplier? No.\n\nCheck if any other interpretation: Could be receive_goods with order_id 1.\n\nYes.\n\nWe must not add prose.\n\nOutput JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465190,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1039,
+   "completion_tokens": 433,
+   "total_tokens": 1472,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 337,
+    "audio_tokens": 0,
+    "reasoning_tokens": 401,
+    "rejected_prediction_tokens": 335
+   }
+  }
+ }
+}

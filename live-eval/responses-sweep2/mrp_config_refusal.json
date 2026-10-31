@@ -1,0 +1,37 @@
+{
+ "id": "mrp_config_refusal",
+ "prompt": "Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-2370bd22b3f64efc90e9ba03c0d6b096",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?\"\n\nThis is planning question mrp_check with sku, qty, need_date, configuration.\n\nWe need to map configuration: \"in aluminum with galvanized finish\" -> characteristic code: value. We have items: BRK-100 Finished Bracket. Likely configuration characteristics: material? Need to infer codes. The example says \"in steel with galvanized finish\" also carries configuration: {characteristic code: value}. We need to figure characteristic codes. Possibly MATERIAL and FINISH? Or something like that. We have no explicit mapping given. But we need to produce configuration object.\n\nWe have to guess characteristic codes. Could be \"MATERIAL\": \"aluminum\" and \"FINISH\": \"galvanized\" ? Or maybe codes like \"MAT\" etc.\n\nWe need to look at typical ERPCraft? Might be generic. The instruction says configuration: {characteristic code: value}. We need to infer codes from prompt. Possibly \"material\": \"aluminum\", \"finish\": \"galvanized\". Lowercase? Need to decide.\n\nWe have items: STL-BLANK Steel blank, ALU-BLANK Aluminum blank. So material aluminum corresponds to ALU-BLANK. Finish galvanized.\n\nWe should output configuration with keys as characteristic codes. Could be \"MATERIAL\" and \"FINISH\" or \"material\" etc.\n\nWe need to choose something plausible. The validation likely checks for configuration presence and values.\n\nWe have sku: \"BRK-100\" exactly. qty: 200. need_date: \"2026-11-15\". intent: \"mrp_check\".\n\nWe must return JSON exactly shape, omitting fields that do not apply.\n\nSo: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}} ??? But need characteristic code exact.\n\nAlternative could be {\"ALU\":?} No.\n\nWe need to consider that the system expects configuration keys to be something like \"MATERIAL\" and \"FINISH\" or \"MATL\" etc. Without spec, we must make best guess.\n\nThe prompt: \"in aluminum with galvanized finish\" -> configuration: {characteristic code: value}. Could be {\"MATERIAL\":\"ALUMINUM\",\"FINISH\":\"GALVANIZED\"} uppercase.\n\nWe should look at example: \"in steel with galvanized finish\" also carries \"configuration\": {characteristic code: value}. They didn't give example values. So we need to infer.\n\nPossibly the characteristic codes are like \"BRK-MAT\" and \"BRK-FIN\" ?\n\nWe could search memory: ERPCraft? Might be a fictional ERP. Could have characteristics like \"Material\" and \"Finish\".\n\nWe should output with keys \"material\" and \"finish\" lower case, values \"aluminum\" and \"galvanized\" lower case as written.\n\nThat seems reasonable.\n\nAlso need to ensure qty integer.\n\nReturn exactly JSON.\n\nWe must not include extra fields.\n\nSo final JSON: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}\n\nBut maybe need to include \"MATERIAL\": \"ALU\" ? Let's think: Items: STL-BLANK, ALU-BLANK. So aluminum maps to ALU-BLANK. But configuration value might be \"ALU\" or \"ALUMINUM\". Prompt says \"in aluminum\" -> value \"aluminum\".\n\nWe could also use \"ALU-BLANK\" as value? No.\n\nBetter to keep literal words.\n\nWe should also consider that configuration might be single key? \"in aluminum with galvanized finish\" could be two characteristics.\n\nWe will output two entries.\n\nCheck rules: Copy customer names and money exactly... qty is unit count as integer... price_each only when... day is weekday... Planning questions are mrp_check: \"What are we short on?\" is plain {\"intent\":\"mrp_check\"}; \"Can we build 200 BRK-100 by Nov 15?\" adds \"sku\" (copied exactly), \"qty\", and \"need_date\" as YYYY-MM-DD (resolve month names against today; a named date already past this year means next year). A configured what-if (\"in steel with galvanized finish\") also carries \"configuration\": {characteristic code: value}.\n\nSo we must do that.\n\nWe should ensure need_date is exactly \"2026-11-15\" as given.\n\nWe should not include customer, supplier, etc.\n\nReturn JSON immediately.\n\nWe must ensure valid JSON.\n\nWe should not add commentary.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465057,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1072,
+   "completion_tokens": 1042,
+   "total_tokens": 2114,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 771,
+    "audio_tokens": 0,
+    "reasoning_tokens": 991,
+    "rejected_prediction_tokens": 1126
+   }
+  }
+ }
+}

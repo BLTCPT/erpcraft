@@ -1,0 +1,37 @@
+{
+ "id": "p2p_receive",
+ "prompt": "Receive 10 BRK-100 against purchase order 1.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-5b83d9d8b56240639b74b611924bd0eb",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"receive_goods\",\"order_id\":1,\"sku\":\"BRK-100\",\"qty\":10}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Receive 10 BRK-100 against purchase order 1.\n\nWe need to return JSON with intent receive_goods, order_id, sku, qty.\n\nRules:\n- Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope): include \"order_id\" when the prompt names the order number, \"supplier\" (copied exactly) when it names the supplier, \"sku\" when it names an item, and \"qty\" when it states how many arrived. Omit what the prompt does not state \u2014 never invent an id.\n\nPrompt: Receive 10 BRK-100 against purchase order 1.\n\nSo qty 10, sku BRK-100, order_id 1.\n\nShould we include supplier? No, not named.\n\nReturn exactly shape.\n\nIntent receive_goods.\n\nWe must ensure JSON correct.\n\nFields: intent, order_id, sku, qty.\n\nPossibly also need to consider other fields omitted.\n\nReturn {\"intent\":\"receive_goods\",\"order_id\":1,\"sku\":\"BRK-100\",\"qty\":10}\n\nCheck spec: qty is integer.\n\nMake sure no extra prose.\n\nWe must not include amount etc.\n\nWe should ensure we follow all rules.\n\nThe system says we are parsing layer, return ONE JSON object and nothing else.\n\nSo output that.\n\nPotential nuance: Should we include supplier? No.\n\nCheck if any other interpretation: Could be out_of_scope? No.\n\nMake sure to copy sku exactly: BRK-100.\n\nYes.\n\nReturn JSON.\n\nWe must not add day etc.\n\nWe should ensure valid JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464953,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 989,
+   "completion_tokens": 353,
+   "total_tokens": 1342,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 768
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 261,
+    "audio_tokens": 0,
+    "reasoning_tokens": 321,
+    "rejected_prediction_tokens": 383
+   }
+  }
+ }
+}

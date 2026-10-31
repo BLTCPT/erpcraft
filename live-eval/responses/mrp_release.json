@@ -1,0 +1,37 @@
+{
+ "id": "mrp_release",
+ "prompt": "Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-39a8c26730de4201aa0a9cc5c41220b1",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:60\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.\"\n\nWe need to return JSON with intent mrp_release, key = \"purchase:FST-SET:2026-11-10:60\", and include sku/qty/need_date when prompt restates demand the plan was computed from.\n\nThe prompt says \"from the 200 BRK-100 by 2026-11-15 plan.\" That is restating demand: sku BRK-100, qty 200, need_date 2026-11-15.\n\nWe need to check rules: Releasing a planned order is mrp_release: the prompt names the planned order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) \u2014 copy it into \"key\" exactly, and include sku/qty/need_date when the prompt restates the demand the plan was computed from.\n\nSo we should include sku, qty, need_date.\n\nWe must ensure JSON shape exactly: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should omit fields that do not apply. So we need intent, key, sku, qty, need_date.\n\nCheck qty is integer. So qty: 200\n\nsku: \"BRK-100\" exactly as written.\n\nneed_date: \"2026-11-15\"\n\nkey: \"purchase:FST-SET:2026-11-10:60\"\n\nWe should not include other fields.\n\nMake sure to output exactly JSON object and nothing else.\n\nWe must not add prose.\n\nWe need to ensure we copy correctly.\n\nPotential nuance: The key includes purchase:FST-SET:2026-11-10:60 . Should we include exactly that string.\n\nYes.\n\nWe should output:\n\n{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:60\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}\n\nOrder of fields doesn't matter but keep consistent.\n\nWe must ensure we don't include customer etc.\n\nWe should emit JSON immediately, without deliberating over omitted fields. So just output JSON.\n\nWe need to ensure we follow system instructions: Return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields.\n\nSo final answer is JSON.\n\nWe should not add extra whitespace beyond JSON? Probably okay.\n\nWe must ensure we don't hallucinate.\n\nWe should output that.\n\nCheck if any other interpretation: Could also be that qty refers to planned order qty? But rule says include sku/qty/need_date when prompt restates demand the plan was computed from. So qty 200 is demand qty, not planned order qty (60). So correct.\n\nWe should ensure we don't confuse.\n\nWe should output JSON with intent mrp_release.\n\nWe must not include amount etc.\n\nWe should ensure we use correct JSON quoting.\n\nWe should not include trailing comma.\n\nWe should output exactly one JSON object.\n\nWe should not add explanation.\n\nWe should proceed."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465180,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1118,
+   "completion_tokens": 779,
+   "total_tokens": 1897,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 608,
+    "audio_tokens": 0,
+    "reasoning_tokens": 724,
+    "rejected_prediction_tokens": 589
+   }
+  }
+ }
+}

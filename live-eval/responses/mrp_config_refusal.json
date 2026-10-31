@@ -1,0 +1,37 @@
+{
+ "id": "mrp_config_refusal",
+ "prompt": "Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-5ddc6d6ecadb41819729a0b695fdf97c",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?\"\n\nThis is a planning question mrp_check with sku, qty, need_date, configuration.\n\nWe need to map configuration: \"in aluminum with galvanized finish\" -> configuration: {characteristic code: value}. Need to infer characteristic codes. Items: BRK-100 Finished Bracket. Likely characteristics: material and finish? Need to guess codes. Possibly \"material\": \"aluminum\" and \"finish\": \"galvanized\". But we need to provide configuration dict.\n\nThe instruction: A configured what-if (\"in steel with galvanized finish\") also carries \"configuration\": {characteristic code: value}.\n\nWe need to infer characteristic codes. Could be something like \"MATERIAL\" and \"FINISH\" or similar. We have no explicit mapping. We need to make best guess. Possibly use lowercase? Example given: \"in steel with galvanized finish\" -> configuration: {characteristic code: value}. Not given example mapping.\n\nWe need to decide. Could be {\"material\": \"aluminum\", \"finish\": \"galvanized\"} or {\"MATERIAL\": \"ALUMINUM\"} etc.\n\nWe should look at typical ERP: characteristics codes maybe \"MAT\" or \"FIN\". But we have to produce something plausible.\n\nWe have items: STL-BLANK Steel blank, ALU-BLANK Aluminum blank. So material aluminum corresponds to ALU-BLANK.\n\nFinish galvanized.\n\nWe need to output JSON with intent mrp_check, sku BRK-100, qty 200, need_date 2026-11-15, configuration.\n\nWe must copy sku exactly: \"BRK-100\"\n\nqty 200\n\nneed_date as YYYY-MM-DD: 2026-11-15\n\nconfiguration: need to provide.\n\nWe should choose keys that reflect characteristic codes. Possibly \"material\" and \"finish\". Let's do {\"material\": \"aluminum\", \"finish\": \"galvanized\"} lower case values as written.\n\nAlternatively could be {\"ALU\": ...}. But better to use descriptive.\n\nCheck rules: configuration: {characteristic code: value}. So we need to provide mapping.\n\nWe should output:\n\n{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}\n\nBut maybe characteristic codes are like \"MATERIAL\" and \"FINISH\" uppercase. Could also be \"BRK-MAT\" etc. Hard to know.\n\nWe could attempt to infer from typical: Might be \"material\" and \"coating\" ?\n\nWe need to make a best guess. Provide lower case.\n\nAlso need to consider date resolution: prompt says by 2026-11-15, that's already YYYY-MM-DD, so use that.\n\nWe must return exactly JSON object, no prose.\n\nWe must ensure we follow shape: omit fields that do not apply.\n\nSo final JSON: intent mrp_check, sku, qty, need_date, configuration.\n\nWe should not include customer, supplier, etc.\n\nMake sure to emit JSON immediately.\n\nPotential nuance: The prompt says \"Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?\" That's a what-if configured. So we need configuration.\n\nWe should output configuration with two entries.\n\nLet's do: {\"material\": \"aluminum\", \"finish\": \"galvanized\"}\n\nIf validator expects specific codes like \"MATERIAL\" etc, might still pass? But we need to choose something.\n\nCould also be \"ALUMINUM\" and \"GALVANIZED\" as values uppercase. But prompt says \"aluminum\" lower, \"galvanized\" lower. Copy exactly? Probably values as written lower.\n\nWe should provide as lower.\n\nThus final answer: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}\n\nCheck if need to include day? No.\n\nMake sure JSON valid.\n\nWe must not add extra fields.\n\nReturn exactly that.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465187,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1109,
+   "completion_tokens": 920,
+   "total_tokens": 2029,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 673,
+    "audio_tokens": 0,
+    "reasoning_tokens": 869,
+    "rejected_prediction_tokens": 1056
+   }
+  }
+ }
+}

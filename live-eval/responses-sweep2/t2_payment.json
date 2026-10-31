@@ -1,0 +1,37 @@
+{
+ "id": "t2_payment",
+ "prompt": "Delta paid $3,125 against their invoice.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-fed6f0d1e85f46b280b7ab5bf8047458",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Delta paid $3,125 against their invoice.\n\nWe need to return JSON with intent record_payment? Let's see intents: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice.\n\nDelta paid $3,125 against their invoice. That's record_payment. Need customer, amount, maybe? Check rules: Copy customer names and money exactly as written (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nWe have customer Delta, amount $3,125. Should we include anything else? Possibly need to infer? The open invoices: #1 Delta \u2014 total $5,000.00, balance $5,000.00. But prompt says Delta paid $3,125 against their invoice. So intent record_payment, customer Delta, amount $3,125.\n\nWe must return exactly JSON shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nShape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should include intent, customer, amount.\n\nNo qty, no price_each, etc.\n\nMake sure amount exactly as written: \"$3,125\" . Prompt says \"$3,125\". Yes.\n\nShould we include day? No.\n\nReturn JSON.\n\nWe must ensure valid JSON.\n\nPotential nuance: record_payment might need to reference invoice? But spec says fields: customer, amount. No invoice id field for AR? So just customer and amount.\n\nThus output: {\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}\n\nCheck if need to include anything else? Possibly topic? No.\n\nWe must not add prose.\n\nWe should output exactly that JSON.\n\nEnsure no extra fields.\n\nWe should follow instruction: Return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields.\n\nSo final answer is JSON.\n\nWe must not include reasoning.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465006,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 993,
+   "completion_tokens": 552,
+   "total_tokens": 1545,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 416,
+    "audio_tokens": 0,
+    "reasoning_tokens": 525,
+    "rejected_prediction_tokens": 536
+   }
+  }
+ }
+}

@@ -1,0 +1,443 @@
+{
+ "about": "Live-recorded agent parse responses for the full acceptance scenario set (LIVE_EVAL.md): every scenario's genuine parse request \u2014 captured from the real adapter \u2014 answered by the live model, then replayed through the real binary by tests/agent_live_replay.rs. Keyed by prompt; where two scenarios share a prompt (T1 fresh vs. duplicate state; paying a matched vs. a held AP invoice) the first recording is kept and the twin lives in live-eval/responses/.",
+ "recorded_from": "baseten meta-models/muse-spark-open-1026 (live, via the custom.baseten connector route)",
+ "recorded_on": "2026-10-31",
+ "intended_route": "baseten meta-models/muse-spark-open-1026",
+ "shared_prompts": {
+  "Invoice Acme for the 40 units we shipped Tuesday.": [
+   "t1_invoice",
+   "t9_duplicate"
+  ],
+  "Pay AP invoice 1.": [
+   "p2p_pay",
+   "p2p_held_refusal"
+  ]
+ },
+ "total_usage": {
+  "prompt_tokens": 24002,
+  "completion_tokens": 17291,
+  "total_tokens": 41293
+ },
+ "exchanges": [
+  {
+   "prompt": "Invoice Acme for the 40 units we shipped Tuesday.",
+   "response": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"day\":\"Tuesday\"}",
+   "scenario": "t1_invoice",
+   "usage": {
+    "prompt_tokens": 1014,
+    "completion_tokens": 1053,
+    "total_tokens": 2067,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 762,
+     "audio_tokens": 0,
+     "reasoning_tokens": 1023,
+     "rejected_prediction_tokens": 1275
+    }
+   }
+  },
+  {
+   "prompt": "Delta paid $3,125 against their invoice.",
+   "response": "{\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}",
+   "scenario": "t2_payment",
+   "usage": {
+    "prompt_tokens": 1030,
+    "completion_tokens": 735,
+    "total_tokens": 1765,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 768
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 560,
+     "audio_tokens": 0,
+     "reasoning_tokens": 708,
+     "rejected_prediction_tokens": 665
+    }
+   }
+  },
+  {
+   "prompt": "Epsilon sent a $1,500 deposit for a future order.",
+   "response": "{\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}",
+   "scenario": "t3_deposit",
+   "usage": {
+    "prompt_tokens": 1016,
+    "completion_tokens": 419,
+    "total_tokens": 1435,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 768
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 307,
+     "audio_tokens": 0,
+     "reasoning_tokens": 390,
+     "rejected_prediction_tokens": 477
+    }
+   }
+  },
+  {
+   "prompt": "Delta returned 2 defective brackets.",
+   "response": "{\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}",
+   "scenario": "t4_return",
+   "usage": {
+    "prompt_tokens": 1027,
+    "completion_tokens": 1470,
+    "total_tokens": 2497,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 768
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 1106,
+     "audio_tokens": 0,
+     "reasoning_tokens": 1439,
+     "rejected_prediction_tokens": 1442
+    }
+   }
+  },
+  {
+   "prompt": "Pay $4,100 to the steel supplier against what we owe.",
+   "response": "{\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}",
+   "scenario": "t5_pay_supplier",
+   "usage": {
+    "prompt_tokens": 1016,
+    "completion_tokens": 1378,
+    "total_tokens": 2394,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 996,
+     "audio_tokens": 0,
+     "reasoning_tokens": 1349,
+     "rejected_prediction_tokens": 1678
+    }
+   }
+  },
+  {
+   "prompt": "Record this month's rent, $1,200.",
+   "response": "{\"intent\":\"record_rent\",\"amount\":\"$1,200\"}",
+   "scenario": "t6_rent",
+   "usage": {
+    "prompt_tokens": 1013,
+    "completion_tokens": 583,
+    "total_tokens": 1596,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 418,
+     "audio_tokens": 0,
+     "reasoning_tokens": 559,
+     "rejected_prediction_tokens": 737
+    }
+   }
+  },
+  {
+   "prompt": "Invoice Acme for the units we shipped.",
+   "response": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme\"}",
+   "scenario": "t7_missing_qty",
+   "usage": {
+    "prompt_tokens": 1011,
+    "completion_tokens": 476,
+    "total_tokens": 1487,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 768
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 339,
+     "audio_tokens": 0,
+     "reasoning_tokens": 454,
+     "rejected_prediction_tokens": 620
+    }
+   }
+  },
+  {
+   "prompt": "Invoice Globex for 10 brackets.",
+   "response": "{\"intent\":\"invoice_shipment\",\"customer\":\"Globex\",\"qty\":10,\"sku\":\"BRK-100\"}",
+   "scenario": "t8_unknown_customer",
+   "usage": {
+    "prompt_tokens": 1010,
+    "completion_tokens": 1360,
+    "total_tokens": 2370,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 1018,
+     "audio_tokens": 0,
+     "reasoning_tokens": 1327,
+     "rejected_prediction_tokens": 1376
+    }
+   }
+  },
+  {
+   "prompt": "Invoice Acme Manufacturing for 10 brackets.",
+   "response": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}",
+   "scenario": "t8b_name_trap",
+   "usage": {
+    "prompt_tokens": 1011,
+    "completion_tokens": 814,
+    "total_tokens": 1825,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 594,
+     "audio_tokens": 0,
+     "reasoning_tokens": 780,
+     "rejected_prediction_tokens": 939
+    }
+   }
+  },
+  {
+   "prompt": "We finished 50 brackets today, cost $4,100.",
+   "response": "{\"intent\":\"complete_production\",\"qty\":50,\"amount\":\"$4,100\",\"day\":\"today\",\"sku\":\"BRK-100\"}",
+   "scenario": "t10_production",
+   "usage": {
+    "prompt_tokens": 1015,
+    "completion_tokens": 1051,
+    "total_tokens": 2066,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 797,
+     "audio_tokens": 0,
+     "reasoning_tokens": 1012,
+     "rejected_prediction_tokens": 988
+    }
+   }
+  },
+  {
+   "prompt": "Invoice Acme for 40 units at $130 each.",
+   "response": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}",
+   "scenario": "t11_price_conflict",
+   "usage": {
+    "prompt_tokens": 1014,
+    "completion_tokens": 591,
+    "total_tokens": 1605,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 433,
+     "audio_tokens": 0,
+     "reasoning_tokens": 559,
+     "rejected_prediction_tokens": 673
+    }
+   }
+  },
+  {
+   "prompt": "Create a purchase order for more steel.",
+   "response": "{\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}",
+   "scenario": "oos_purchase_order",
+   "usage": {
+    "prompt_tokens": 1010,
+    "completion_tokens": 606,
+    "total_tokens": 1616,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 443,
+     "audio_tokens": 0,
+     "reasoning_tokens": 583,
+     "rejected_prediction_tokens": 698
+    }
+   }
+  },
+  {
+   "prompt": "Can we build 200 BRK-100 by Nov 15?",
+   "response": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}",
+   "scenario": "mrp_check_build",
+   "usage": {
+    "prompt_tokens": 1099,
+    "completion_tokens": 383,
+    "total_tokens": 1482,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 1024
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 291,
+     "audio_tokens": 0,
+     "reasoning_tokens": 345,
+     "rejected_prediction_tokens": 353
+    }
+   }
+  },
+  {
+   "prompt": "Can we build 200 BRK-100 by 2026-10-20?",
+   "response": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-10-20\"}",
+   "scenario": "mrp_check_shortage",
+   "usage": {
+    "prompt_tokens": 1103,
+    "completion_tokens": 609,
+    "total_tokens": 1712,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 472,
+     "audio_tokens": 0,
+     "reasoning_tokens": 571,
+     "rejected_prediction_tokens": 487
+    }
+   }
+  },
+  {
+   "prompt": "What are we short on?",
+   "response": "{\"intent\":\"mrp_check\"}",
+   "scenario": "mrp_check_plain",
+   "usage": {
+    "prompt_tokens": 1091,
+    "completion_tokens": 349,
+    "total_tokens": 1440,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 240,
+     "audio_tokens": 0,
+     "reasoning_tokens": 332,
+     "rejected_prediction_tokens": 523
+    }
+   }
+  },
+  {
+   "prompt": "Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.",
+   "response": "{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:60\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}",
+   "scenario": "mrp_release",
+   "usage": {
+    "prompt_tokens": 1118,
+    "completion_tokens": 779,
+    "total_tokens": 1897,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 608,
+     "audio_tokens": 0,
+     "reasoning_tokens": 724,
+     "rejected_prediction_tokens": 589
+    }
+   }
+  },
+  {
+   "prompt": "Release purchase:FST-SET:2026-11-10:999 please.",
+   "response": "{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}",
+   "scenario": "mrp_release_unknown",
+   "usage": {
+    "prompt_tokens": 1102,
+    "completion_tokens": 706,
+    "total_tokens": 1808,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 1024
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 534,
+     "audio_tokens": 0,
+     "reasoning_tokens": 672,
+     "rejected_prediction_tokens": 663
+    }
+   }
+  },
+  {
+   "prompt": "Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?",
+   "response": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}",
+   "scenario": "mrp_config_refusal",
+   "usage": {
+    "prompt_tokens": 1109,
+    "completion_tokens": 920,
+    "total_tokens": 2029,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 1024
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 673,
+     "audio_tokens": 0,
+     "reasoning_tokens": 869,
+     "rejected_prediction_tokens": 1056
+    }
+   }
+  },
+  {
+   "prompt": "Receive 10 BRK-100 against purchase order 1.",
+   "response": "{\"intent\":\"receive_goods\",\"order_id\":1,\"sku\":\"BRK-100\",\"qty\":10}",
+   "scenario": "p2p_receive",
+   "usage": {
+    "prompt_tokens": 1039,
+    "completion_tokens": 433,
+    "total_tokens": 1472,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 337,
+     "audio_tokens": 0,
+     "reasoning_tokens": 401,
+     "rejected_prediction_tokens": 335
+    }
+   }
+  },
+  {
+   "prompt": "Pay AP invoice 1.",
+   "response": "{\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1}",
+   "scenario": "p2p_pay",
+   "usage": {
+    "prompt_tokens": 1032,
+    "completion_tokens": 300,
+    "total_tokens": 1332,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 0
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 216,
+     "audio_tokens": 0,
+     "reasoning_tokens": 277,
+     "rejected_prediction_tokens": 372
+    }
+   }
+  },
+  {
+   "prompt": "Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.",
+   "response": "{\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1,\"override_reason\":\"the price increase was approved by Dana\",\"overrider\":\"Dana\"}",
+   "scenario": "p2p_held_override",
+   "usage": {
+    "prompt_tokens": 1049,
+    "completion_tokens": 1196,
+    "total_tokens": 2245,
+    "prompt_tokens_details": {
+     "audio_tokens": 0,
+     "cached_tokens": 896
+    },
+    "completion_tokens_details": {
+     "accepted_prediction_tokens": 908,
+     "audio_tokens": 0,
+     "reasoning_tokens": 1155,
+     "rejected_prediction_tokens": 1108
+    }
+   }
+  }
+ ]
+}

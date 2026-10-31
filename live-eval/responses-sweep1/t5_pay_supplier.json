@@ -1,0 +1,37 @@
+{
+ "id": "t5_pay_supplier",
+ "prompt": "Pay $4,100 to the steel supplier against what we owe.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-85d1e0bd957449c69720df96622b4ab1",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Pay $4,100 to the steel supplier against what we owe.\"\n\nWe need to return JSON with intent.\n\nWe have intents: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice. Anything else is out_of_scope.\n\nPay $4,100 to steel supplier against what we owe.\n\nThis is paying supplier. There are two intents: pay_supplier and pay_ap_invoice.\n\npay_supplier: pays down supplier balances in general.\npay_ap_invoice: paying one specific supplier invoice.\n\nPrompt says \"against what we owe\" - general payment, not specific invoice. So intent pay_supplier.\n\nWe need to include supplier, amount.\n\nSupplier: \"steel supplier\" - but we have suppliers on file: none. However we copy supplier exactly as written? The rule: include \"supplier\" (copied exactly) when it names the supplier. So supplier = \"steel supplier\"? Or maybe we need to interpret? The prompt says \"steel supplier\". That's the supplier name as given. We should copy exactly.\n\nAmount: \"$4,100\" - copy exactly as written. Rule: Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it. So amount = \"$4,100\"\n\nWe should not include other fields.\n\nWe need to ensure JSON shape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nOmit fields that do not apply.\n\nSo return {\"intent\": \"pay_supplier\", \"supplier\": \"steel supplier\", \"amount\": \"$4,100\"}\n\nCheck if any other nuance: The system says Suppliers on file: none. But we still output supplier as given. The adapter validates everything and renders confirmation from ledger, never from your text. So we just output.\n\nWe must ensure we don't add extra prose.\n\nWe need to consider if \"steel supplier\" is ambiguous? Could be out_of_scope? No.\n\nWe should return exactly JSON object.\n\nPotential edge: pay_supplier expects supplier name exactly as in file? But file has none. Still we copy as written.\n\nWe should not include qty.\n\nMake sure amount includes dollar sign and comma.\n\nThus final answer: {\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}\n\nCheck formatting: Should be valid JSON.\n\nWe must not add explanation.\n\nWe are parsing layer.\n\nReturn exactly this shape, omitting fields that do not apply.\n\nSo output that JSON.\n\nWe should ensure we follow instruction: Return exactly this shape, omitting fields that do not apply.\n\nWe should not include customer, etc.\n\nWe should ensure intent is pay_supplier.\n\nDouble-check definitions:\n\n- Paying one specific supplier invoice is pay_ap_invoice \u2014 not pay_supplier, which pays down supplier balances in general. Include \"ap_invoice_id\" when prompt names one (\"AP invoice 3\"), \"supplier\" (copied exactly) when it names the supplier, and \"amount\" only when prompt states one (no amount means full balance). If prompt insists on paying despite three-way-match hold (\"pay it anyway\"), also include \"override_reason\" \u2014 justification exactly as stated \u2014 and \"overrider\" \u2014 person prompt names as approving it. Without both, held invoice cannot be proposed for payment.\n\nThis prompt does not name AP invoice id, so it's pay_supplier.\n\nThus final answer is pay_supplier.\n\nWe should ensure we don't hallucinate supplier name normalization. Keep \"steel supplier\" lower case as written.\n\nCheck prompt: \"Pay $4,100 to the steel supplier against what we owe.\" The supplier phrase is \"steel supplier\". Could include \"the\"? Rule says copy customer names and money exactly as written. For supplier, copy exactly when it names supplier. Probably \"steel supplier\" without \"the\". That's correct.\n\nWe should output JSON with double quotes.\n\nWe must not add trailing comma.\n\nWe should ensure we don't include day, etc.\n\nThus final output: {\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}\n\nWe should consider if amount should be \"$4,100\" exactly. Yes.\n\nWe are done.\n\nWe must not add any prose.\n\nWe should ensure we respond with JSON only.\n\nPotential nuance: The system says \"You are the parsing layer ... You turn one operator prompt into ONE JSON object and nothing else \u2014 no prose, no journal lines. The adapter validates everything and renders the confirmation from the ledger, never from your text.\"\n\nSo we must not add anything else.\n\nWe should output JSON.\n\nWe should ensure we handle reasoning strength 512 but not needed.\n\nWe should output final JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464895,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 966,
+   "completion_tokens": 1106,
+   "total_tokens": 2072,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 854,
+    "audio_tokens": 0,
+    "reasoning_tokens": 1077,
+    "rejected_prediction_tokens": 917
+   }
+  }
+ }
+}

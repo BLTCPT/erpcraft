@@ -443,6 +443,9 @@ fn agent_parse_request(
     let customers = read("list_customers")?;
     let items = read("list_items")?;
     let invoices = read("list_invoices")?;
+    let suppliers = read("list_suppliers")?;
+    let purchase_orders = read("list_procurement_orders")?;
+    let ap_invoices = read("list_ap_invoices")?;
     let arr = |v: &Value| v.as_array().cloned().unwrap_or_default();
     let gi = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
     let gs = |v: &Value, k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -471,6 +474,33 @@ fn agent_parse_request(
                 customer_name: gs(inv, "customer_name"),
                 total_cents: gi(inv, "total_cents"),
                 balance_cents: gi(inv, "balance_cents"),
+            })
+            .collect(),
+        suppliers: arr(&suppliers).iter().map(|s| gs(s, "name")).collect(),
+        open_purchase_orders: arr(&purchase_orders)
+            .iter()
+            .filter(|po| matches!(gs(po, "status").as_str(), "open" | "partially_received"))
+            .map(|po| erpcraft_cli::agent::ParsePo {
+                id: gi(po, "id"),
+                supplier_name: gs(po, "supplier_name"),
+                total_cents: gi(po, "total_cents"),
+                received_cents: gi(po, "received_cents"),
+            })
+            .collect(),
+        open_ap_invoices: arr(&ap_invoices)
+            .iter()
+            .filter(|inv| {
+                matches!(
+                    gs(inv, "status").as_str(),
+                    "open" | "partially_paid" | "on_hold"
+                ) && gi(inv, "balance_cents") > 0
+            })
+            .map(|inv| erpcraft_cli::agent::ParseApInvoice {
+                id: gi(inv, "id"),
+                supplier_name: gs(inv, "supplier_name"),
+                total_cents: gi(inv, "total_cents"),
+                balance_cents: gi(inv, "balance_cents"),
+                status: gs(inv, "status"),
             })
             .collect(),
     })

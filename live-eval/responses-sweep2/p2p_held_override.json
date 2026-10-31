@@ -1,0 +1,37 @@
+{
+ "id": "p2p_held_override",
+ "prompt": "Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-79278a1118b942eeb246bad55c3098f0",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1,\"override_reason\":\"the price increase was approved by Dana\",\"overrider\":\"Dana\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\n\nWe need to return JSON with intent pay_ap_invoice, ap_invoice_id 1, supplier Harbor Components? The prompt says Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\n\nWe have open AP invoices: #1 Harbor Components \u2014 total $650, balance $650 (ON THREE-WAY-MATCH HOLD)\n\nRules: Paying one specific supplier invoice is pay_ap_invoice \u2014 not pay_supplier. Include ap_invoice_id when prompt names one (\"AP invoice 3\"), supplier (copied exactly) when it names supplier, and amount only when prompt states one (no amount means full balance). If prompt insists on paying despite three-way-match hold (\"pay it anyway\"), also include override_reason \u2014 justification exactly as stated \u2014 and overrider \u2014 person prompt names as approving it. Without both, held invoice cannot be proposed for payment.\n\nWe have override_reason: \"the price increase was approved by Dana.\" Or exactly as stated: \"the price increase was approved by Dana\" ? Need to copy justification exactly as stated. The prompt: \"Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\"\n\nSo override_reason should be \"the price increase was approved by Dana\" and overrider \"Dana\".\n\nWe should include supplier? The prompt doesn't name supplier explicitly, but we know from open AP invoices #1 Harbor Components. However rules: include supplier when prompt names supplier. Prompt does not name supplier, so omit supplier? But maybe we should include? The spec says include supplier (copied exactly) when it names the supplier. So if not named, omit. However we have ap_invoice_id 1, that identifies it.\n\nAlso need amount? No amount stated, so omit (means full balance).\n\nWe need to return JSON exactly shape.\n\nIntent pay_ap_invoice, ap_invoice_id 1, override_reason, overrider.\n\nCheck format: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should emit only applicable fields. So intent, ap_invoice_id, override_reason, overrider.\n\nMake sure to copy exactly. The override_reason: \"the price increase was approved by Dana\" \u2014 should we include period? Probably without period. Let's see typical examples. The justification exactly as stated. The phrase after dash is \"the price increase was approved by Dana.\" Might include period? Better without trailing period. But either is okay? Need to be precise.\n\nWe should output: {\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1,\"override_reason\":\"the price increase was approved by Dana\",\"overrider\":\"Dana\"}\n\nCheck if need supplier? Could add supplier Harbor Components even though not named? The rule says include supplier when prompt names supplier. So omit. But some implementations might include supplier inferred. Safer to omit supplier to follow rule strictly. However adapter might expect supplier? Let's see: open AP invoices #1 Harbor Components \u2014 total $650. The prompt says Pay AP invoice 1 anyway. It doesn't name supplier, but we could infer supplier is Harbor Components. But rule says omit what prompt does not state \u2014 never invent an id. For receive_goods, omit what prompt does not state \u2014 never invent an id. For pay_ap_invoice, include supplier when prompt names supplier. So we should not include supplier if not named.\n\nThus final JSON: intent pay_ap_invoice, ap_invoice_id 1, override_reason, overrider.\n\nMake sure JSON valid.\n\nReturn exactly this shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nWe must not add prose.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465078,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1012,
+   "completion_tokens": 863,
+   "total_tokens": 1875,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 655,
+    "audio_tokens": 0,
+    "reasoning_tokens": 822,
+    "rejected_prediction_tokens": 801
+   }
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "id": "t2_payment",
+ "prompt": "Delta paid $3,125 against their invoice.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-407127b3976d4d04b2e541d6d535d55d",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Delta paid $3,125 against their invoice.\n\nWe need to return JSON with intent record_payment? Let's see intents: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice.\n\nDelta paid $3,125 against their invoice. That's record_payment. Need to copy customer names and money exactly as written. So customer: Delta, amount: \"$3,125\" ? The prompt says \"$3,125\". Should keep exactly. Also maybe need to include? The rules: Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nqty is unit count as integer, when prompt states one. Not here.\n\nprice_each only when prompt states per-unit price.\n\nday is weekday name as written or \"today\". Not here.\n\nWe need to produce JSON: {\"intent\": \"record_payment\", \"customer\": \"Delta\", \"amount\": \"$3,125\"}\n\nCheck if need anything else? Possibly need to consider open invoices: #1 Delta \u2014 total $5,000.00, balance $5,000.00. But we just parse.\n\nThe shape: omit fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo output: {\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}\n\nMake sure formatting exactly. The spec says return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields:\n{\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should include intent, customer, amount.\n\nNo other fields.\n\nWe must not add prose.\n\nWe should ensure JSON valid.\n\nPotential nuance: amount includes dollar sign. Yes.\n\nWe should not include topic.\n\nWe should output exactly JSON object.\n\nWe must not add explanation.\n\nWe should ensure we copy \"Delta\" exactly.\n\nThus final answer: {\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}\n\nCheck if need to include day? No.\n\nWe should ensure we don't hallucinate.\n\nWe should output that.\n\nWe must not add journal lines.\n\nWe should comply.\n\nWe should ensure we don't add extra whitespace issues? JSON whitespace okay.\n\nWe should output single line JSON.\n\nWe should not add markdown.\n\nWe should just output JSON.\n\nWe should ensure we follow system instruction: You are parsing layer... Return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields.\n\nSo we do.\n\nWe should not include reasoning.\n\nWe should output JSON.\n\nWe should ensure we handle amount exactly \"$3,125\" not \"$3,125.00\".\n\nYes.\n\nWe should output.\n\nWe should not add trailing comma.\n\nWe should ensure we use double quotes.\n\nWe should output final."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465119,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1030,
+   "completion_tokens": 735,
+   "total_tokens": 1765,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 768
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 560,
+    "audio_tokens": 0,
+    "reasoning_tokens": 708,
+    "rejected_prediction_tokens": 665
+   }
+  }
+ }
+}

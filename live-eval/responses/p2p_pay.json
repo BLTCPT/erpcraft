@@ -1,0 +1,37 @@
+{
+ "id": "p2p_pay",
+ "prompt": "Pay AP invoice 1.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-46236d9c85e1483bb0bf144e45cc3d91",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Pay AP invoice 1.\n\nWe need to return JSON with intent pay_ap_invoice, ap_invoice_id 1.\n\nRules: Paying one specific supplier invoice is pay_ap_invoice \u2014 not pay_supplier. Include ap_invoice_id when prompt names one (\"AP invoice 3\"), supplier (copied exactly) when it names supplier, and amount only when prompt states one (no amount means full balance). If prompt insists on paying despite three-way-match hold (\"pay it anyway\"), also include override_reason and overrider.\n\nHere prompt: Pay AP invoice 1. So intent pay_ap_invoice, ap_invoice_id 1.\n\nNo supplier mentioned, no amount.\n\nWe should output {\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1}\n\nCheck shape: need to omit fields that do not apply. So just those.\n\nWe must ensure JSON exactly.\n\nNo deliberating over omitted fields.\n\nReturn exactly shape.\n\nWe must not add extra prose.\n\nSo output JSON.\n\nPotential nuance: Should we include supplier? No, prompt doesn't name supplier. Even though open AP invoices shows #1 Harbor Components, we should not infer supplier? The rule says include supplier when prompt names supplier. So omit.\n\nThus final answer: {\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1}\n\nMake sure formatting correct.\n\nWe must not add topic etc.\n\nReturn JSON immediately.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465192,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1032,
+   "completion_tokens": 300,
+   "total_tokens": 1332,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 216,
+    "audio_tokens": 0,
+    "reasoning_tokens": 277,
+    "rejected_prediction_tokens": 372
+   }
+  }
+ }
+}

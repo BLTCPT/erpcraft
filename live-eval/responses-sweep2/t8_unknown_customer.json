@@ -1,0 +1,37 @@
+{
+ "id": "t8_unknown_customer",
+ "prompt": "Invoice Globex for 10 brackets.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-3c7d2462348a4fe6850bddc5bb7f2736",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"invoice_shipment\",\"customer\":\"Globex\",\"qty\":10,\"sku\":\"BRK-100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Invoice Globex for 10 brackets.\n\nWe need to return JSON with intent invoice_shipment etc.\n\nWe have customers on file: Acme, Beta, Delta, Epsilon. Globex is not on file. But we still need to produce intent? The rules: Copy customer names exactly as written. So customer = \"Globex\". qty 10. sku? Items: BRK-100 Finished Bracket \u2014 price $125.00. The prompt says \"10 brackets.\" Likely sku BRK-100. Should we include sku? The spec says sku when it names an item. \"brackets\" is generic but we have item BRK-100 Finished Bracket. Probably map to BRK-100. However need to be careful: The adapter validates everything and renders confirmation from ledger, never from your text. So we should include sku BRK-100.\n\nAlso need to consider intent invoice_shipment. Should include customer, qty, sku.\n\nNo amount given, no price_each.\n\nWe must return exactly JSON shape.\n\nWe should output: {\"intent\":\"invoice_shipment\",\"customer\":\"Globex\",\"qty\":10,\"sku\":\"BRK-100\"}\n\nCheck rules: qty is unit count as integer when prompt states one. Yes 10.\n\nShould we include day? No.\n\nWe must not add extra fields.\n\nWe must ensure JSON valid.\n\nPotential nuance: The system says \"Customers on file: Acme, Beta, Delta, Epsilon\" - Globex not on file, but we still output. The adapter will handle validation.\n\nWe must not add prose.\n\nReturn exactly JSON.\n\nWe should ensure we follow shape: intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nSo output minimal.\n\nWe should not include amount.\n\nThus final answer: {\"intent\":\"invoice_shipment\",\"customer\":\"Globex\",\"qty\":10,\"sku\":\"BRK-100\"}\n\nCheck if need to include price? No.\n\nMake sure to emit JSON immediately.\n\nWe must not deliberate over omitted fields? The instruction says emit JSON immediately, without deliberating over omitted fields. But we are reasoning layer, we can reason internally but final output must be JSON only.\n\nWe should output that.\n\nPotential alternative: Should we omit sku because prompt says \"brackets\" not \"BRK-100\"? But items list says BRK-100 Finished Bracket \u2014 price $125.00. Likely mapping is expected. The spec says sku when it names an item. \"brackets\" could be considered naming item. Might be ambiguous. Could include sku as BRK-100. Safer to include? If we omit sku, adapter might not know what to invoice. But if we include wrong sku, validation fails. However typical tasks: \"10 brackets\" maps to BRK-100.\n\nWe should include sku.\n\nWe should not include amount.\n\nThus final JSON.\n\nWe must ensure no extra whitespace issues.\n\nReturn exactly JSON object.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465020,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 973,
+   "completion_tokens": 657,
+   "total_tokens": 1630,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 469,
+    "audio_tokens": 0,
+    "reasoning_tokens": 624,
+    "rejected_prediction_tokens": 847
+   }
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "id": "t8b_name_trap",
+ "prompt": "Invoice Acme Manufacturing for 10 brackets.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-c4d37eb948ec4a93a70915c5d691bf9d",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Invoice Acme Manufacturing for 10 brackets.\"\n\nWe need to produce JSON with intent invoice_shipment, customer, qty, etc.\n\nWe have customers on file: Acme, Beta, Delta, Epsilon. Items: BRK-100 Finished Bracket \u2014 price $125.00, standard cost $68.00\n\nPrompt says Invoice Acme Manufacturing for 10 brackets.\n\nWe need to map customer: \"Acme Manufacturing\" vs \"Acme\". Should copy customer names exactly as written in prompt? Rules: Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nSo customer should be \"Acme Manufacturing\" exactly as written.\n\nqty is 10.\n\nsku? The prompt says \"10 brackets.\" Should we infer sku BRK-100? The rules: sku only when prompt states... For invoice_shipment, we need sku? The shape includes sku. But rules say: Copy ... The intent invoice_shipment likely requires sku, qty, customer. However prompt says \"10 brackets\" not \"BRK-100\". Should we map to BRK-100? The items list shows BRK-100 Finished Bracket. Probably we should infer sku = BRK-100. But rules say sku only when prompt states... Let's see examples: The spec says return exactly shape omitting fields that do not apply. For invoice_shipment, we need to include sku if we can identify. The prompt says \"10 brackets\" - that corresponds to BRK-100. Should we include sku: \"BRK-100\"? The rules for mrp_check says sku copied exactly. But for invoice_shipment, not explicitly stated. However typical parsing would map \"brackets\" to BRK-100.\n\nWe have no price_each stated, so omit.\n\nday is \"today\" ? The prompt doesn't state day. But today is 2026-10-30. Should we include day? The shape includes day. Rules: day is the weekday name as written (\"Tuesday\") or \"today\". If not written, omit.\n\nSo we should output: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}\n\nBut need to check if sku should be omitted because not explicitly stated. However the item list suggests we should infer. Let's see typical ERPCraft tasks: They want to map \"brackets\" to BRK-100. So include sku.\n\nAlso need to consider amount? No amount stated.\n\nWe should output JSON only.\n\nWe must not include extra fields.\n\nWe should include qty as integer 10.\n\nWe should include customer exactly as \"Acme Manufacturing\".\n\nShould we include sku? Let's decide to include sku as BRK-100 because it's the only bracket item.\n\nIf we omit sku, the adapter might fail to create invoice.\n\nThe instruction: \"Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\" So customer copy exactly.\n\nqty is unit count as integer, when prompt states one. Yes 10.\n\nprice_each only when prompt states per-unit price.\n\nday is weekday name as written or \"today\".\n\nSo final JSON: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}\n\nCheck if need to include amount? No.\n\nWe must return exactly JSON object.\n\nWe must not add prose.\n\nWe should ensure valid JSON.\n\nPotential alternative: customer \"Acme Manufacturing\" vs \"Acme\". The file says Acme, but prompt says Acme Manufacturing. We copy exactly.\n\nThus output.\n\nWe should not include day.\n\nWe should include sku.\n\nLet's produce final answer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465143,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1011,
+   "completion_tokens": 814,
+   "total_tokens": 1825,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 594,
+    "audio_tokens": 0,
+    "reasoning_tokens": 780,
+    "rejected_prediction_tokens": 939
+   }
+  }
+ }
+}

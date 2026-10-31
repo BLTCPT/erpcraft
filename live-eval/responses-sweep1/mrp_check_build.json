@@ -1,0 +1,37 @@
+{
+ "id": "mrp_check_build",
+ "prompt": "Can we build 200 BRK-100 by Nov 15?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-ce0e46ada5a14701add18cd8de3c08be",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Can we build 200 BRK-100 by Nov 15?\"\n\nToday is 2026-10-31. Need to produce JSON with intent mrp_check, sku BRK-100, qty 200, need_date 2026-11-15.\n\nRules: Planning questions are mrp_check: \"Can we build 200 BRK-100 by Nov 15?\" adds sku (copied exactly), qty, and need_date as YYYY-MM-DD (resolve month names against today; a named date already past this year means next year). A configured what-if also carries configuration.\n\nSo we need to output JSON.\n\nWe must copy customer names and money exactly... Not relevant.\n\nqty is unit count as integer.\n\nprice_each only when prompt states per-unit price.\n\nday is weekday name as written or today.\n\nWe need to return exactly shape, omitting fields that do not apply.\n\nIntent mrp_check, sku BRK-100, qty 200, need_date 2026-11-15.\n\nCheck date: Today 2026-10-31, Nov 15 is in future this year, so 2026-11-15.\n\nWe should not include other fields.\n\nReturn JSON object.\n\nEnsure formatting correct.\n\nWe must not add prose.\n\nWe need to ensure we follow spec: Return exactly this shape, omitting fields that do not apply: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nSo output: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}\n\nWe should ensure qty integer.\n\nNo other fields.\n\nWe must not include customer etc.\n\nWe should ensure JSON valid.\n\nWe are parsing layer, return one JSON object and nothing else.\n\nWe should not add explanation.\n\nWe need to consider if any other nuance: The prompt is \"Can we build 200 BRK-100 by Nov 15?\" That's a planning question.\n\nWe should output that.\n\nWe must ensure we don't hallucinate.\n\nWe should output exactly that JSON.\n\nWe need to ensure we use correct quoting.\n\nWe should not include trailing comma.\n\nWe should ensure we follow system instructions: You are parsing layer... Return exactly this shape...\n\nWe should do that.\n\nWe should not add extra fields like configuration.\n\nWe should ensure we handle date correctly: 2026-11-15.\n\nWe should ensure we handle sku exactly as BRK-100.\n\nWe should ensure qty 200.\n\nWe should ensure intent mrp_check.\n\nWe should output JSON.\n\nWe should not add any other text.\n\nWe should ensure we don't add markdown.\n\nWe should output raw JSON.\n\nWe should ensure we don't add newline prose.\n\nWe should output JSON object.\n\nWe should ensure we follow all rules.\n\nWe should output final answer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464930,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1049,
+   "completion_tokens": 689,
+   "total_tokens": 1738,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 768
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 526,
+    "audio_tokens": 0,
+    "reasoning_tokens": 651,
+    "rejected_prediction_tokens": 615
+   }
+  }
+ }
+}

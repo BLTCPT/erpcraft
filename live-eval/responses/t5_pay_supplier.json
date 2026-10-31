@@ -1,0 +1,37 @@
+{
+ "id": "t5_pay_supplier",
+ "prompt": "Pay $4,100 to the steel supplier against what we owe.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-2abe7f55730941d3972a677c1c5d9bc7",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Pay $4,100 to the steel supplier against what we owe.\"\n\nWe need to return JSON with intent.\n\nWe have intents: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice.\n\nPaying supplier: pay_supplier vs pay_ap_invoice.\n\nRules:\n- Paying one specific supplier invoice is pay_ap_invoice \u2014 not pay_supplier, which pays down supplier balances in general. Include ap_invoice_id when prompt names one (\"AP invoice 3\"), supplier (copied exactly) when it names supplier, and amount only when prompt states one (no amount means full balance). If prompt insists on paying despite three-way-match hold (\"pay it anyway\"), also include override_reason...\n\n- Receiving a delivery against purchase order is receive_goods...\n\nWe have prompt: Pay $4,100 to the steel supplier against what we owe.\n\nWe need to determine supplier name. Customers on file: Acme, Beta, Delta, Epsilon. Suppliers on file: none. But prompt says \"steel supplier\". Is that a supplier name? Probably not exact. But we have to copy supplier exactly when it names supplier. Does \"steel supplier\" count as supplier? Might be ambiguous. However we have no suppliers on file. But we should still parse.\n\nWe need to decide intent: pay_supplier vs pay_ap_invoice. The prompt says \"against what we owe\" - general payment, not specific invoice. So pay_supplier.\n\nFields: supplier, amount, etc.\n\nWe need to copy customer names and money exactly as written. Amount \"$4,100\" stays \"$4,100\". So amount field should be \"$4,100\".\n\nSupplier: \"steel supplier\" ? Should we include? The rule says include supplier (copied exactly) when it names the supplier. Does \"steel supplier\" count? Possibly yes. But suppliers on file: none. Could be that we cannot identify supplier, so maybe unclear? However instruction says: Anything else (payroll, tax, multi-currency) is out_of_scope. If you cannot tell, unclear.\n\nBut pay_supplier requires supplier? Let's see shape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe can omit fields that do not apply. So supplier is optional? But for pay_supplier, we likely need supplier. If prompt says \"steel supplier\" ambiguous, maybe we should not include supplier? Or include as \"steel supplier\"?\n\nCheck examples: Not given.\n\nWe need to consider that \"steel supplier\" is not a name on file, but prompt says \"steel supplier\". Could be generic description. The adapter validates everything and renders confirmation from ledger, never from your text. So we should still emit supplier as \"steel supplier\" if that's what prompt says.\n\nAlternatively, maybe intent is unclear because supplier not on file? But rules say copy supplier names exactly as written. So we should copy \"steel supplier\".\n\nBut is \"steel supplier\" a supplier name? Could be considered not a proper name. However we have no other info.\n\nAnother angle: Pay $4,100 to the steel supplier against what we owe. This is pay_supplier with amount $4,100 and supplier \"steel supplier\". But maybe we should omit supplier if not exact match? The instruction: \"Copy customer names and money exactly as written\" - for supplier similar. So we should copy.\n\nCheck other similar tasks: Usually these parsing tasks expect to handle generic supplier references. Might be that \"steel supplier\" is not a valid supplier name, so we should return unclear? Let's see typical ERP Craft behavior: Suppliers on file: none. So any supplier payment would be invalid, but parsing layer still should parse it; adapter validates. So we still return JSON with supplier as written.\n\nThus output: {\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}\n\nBut need to check amount formatting: prompt says \"$4,100\" - keep exactly. So amount \"$4,100\".\n\nShould we include anything else? No.\n\nCould also be pay_ap_invoice? No, because no invoice id mentioned.\n\nThus final JSON: {\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}\n\nCheck if supplier should be capitalized? Prompt says \"steel supplier\" lower case. Copy exactly: \"steel supplier\".\n\nAlternatively maybe supplier is not provided, so omit supplier field? But then pay_supplier without supplier is weird. However spec says omit fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields. So if we cannot identify supplier, we omit it. But we have a phrase \"steel supplier\" - is that a supplier name? Might be considered not a name, so omit.\n\nWe need to decide. Let's look at rule for receive_goods: include \"supplier\" (copied exactly) when it names the supplier. So they expect to copy exactly when named. Similarly for pay_ap_invoice: include supplier when it names supplier. For pay_supplier, presumably same.\n\nThus if prompt says \"steel supplier\", that is naming supplier as \"steel supplier\". So include.\n\nCould there be alternative interpretation: \"steel supplier\" is not a proper supplier on file, so we should treat as unclear? But instruction says if you cannot tell, unclear. We can tell intent is pay_supplier.\n\nThus answer is pay_supplier.\n\nCheck if amount should be \"$4,100\" or \"$4,100\"? Yes.\n\nWe must return exactly one JSON object and nothing else \u2014 no prose, no journal lines.\n\nSo output: {\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}\n\nPotential nuance: supplier might be expected to be omitted because not on file, and amount only. But better to include supplier.\n\nLet's see other examples from similar tasks online: ERPCraft parsing layer examples often have \"steel supplier\" as supplier name. Might be they want supplier: \"steel supplier\".\n\nWe should output that.\n\nEnsure JSON valid.\n\nNo other fields.\n\nReturn exactly shape.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465129,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1016,
+   "completion_tokens": 1378,
+   "total_tokens": 2394,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 996,
+    "audio_tokens": 0,
+    "reasoning_tokens": 1349,
+    "rejected_prediction_tokens": 1678
+   }
+  }
+ }
+}

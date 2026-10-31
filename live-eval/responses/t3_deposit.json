@@ -1,0 +1,37 @@
+{
+ "id": "t3_deposit",
+ "prompt": "Epsilon sent a $1,500 deposit for a future order.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-9f9de4c4c54044a194e2cf7be0683b22",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Epsilon sent a $1,500 deposit for a future order.\"\n\nWe need to return JSON with intent record_deposit? Let's see intents list: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice.\n\nSo record_deposit is appropriate.\n\nFields: intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nWe need to copy customer names and money exactly as written. So customer: \"Epsilon\", amount: \"$1,500\" ? Should we include? The spec says amount is \"...\". For record_deposit, amount is relevant. Copy exactly as written: \"$1,500\"\n\nWe should not add extra fields.\n\nReturn exactly shape, omitting fields that do not apply.\n\nSo {\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}\n\nCheck if any other intent? Could be record_payment? But record_deposit is distinct for deposit for future order. So yes.\n\nWe must emit JSON immediately, without deliberating over omitted fields. So just output JSON.\n\nWe must ensure correct formatting.\n\nNo prose, no journal lines.\n\nReturn exactly this shape.\n\nWe should not include qty etc.\n\nMake sure to follow rules: Copy customer names and money exactly as written.\n\nSo output: {\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}\n\nPotentially need to consider if amount should be \"$1,500\" exactly. Yes.\n\nWe should not add day.\n\nWe are parsing layer.\n\nWe must not add extra explanation.\n\nProceed to final."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465122,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1016,
+   "completion_tokens": 419,
+   "total_tokens": 1435,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 768
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 307,
+    "audio_tokens": 0,
+    "reasoning_tokens": 390,
+    "rejected_prediction_tokens": 477
+   }
+  }
+ }
+}

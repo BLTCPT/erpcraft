@@ -1,0 +1,37 @@
+{
+ "id": "t5_pay_supplier",
+ "prompt": "Pay $4,100 to the steel supplier against what we owe.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-7ebaecdfee3c499abddd003275032b2d",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Pay $4,100 to the steel supplier against what we owe.\n\nWe have suppliers on file: none. So supplier not found? But prompt says \"steel supplier\". No supplier on file. Need to handle.\n\nIntents: pay_supplier vs pay_ap_invoice. This is paying supplier generally, not specific invoice. So intent pay_supplier.\n\nWe need to produce JSON with intent, supplier, amount, etc.\n\nRules: Copy customer names and money exactly as written. qty integer, price_each only when per-unit price, day weekday, etc.\n\nWe have supplier: \"steel supplier\" ? But suppliers on file: none. Should we still include supplier as written? The spec says supplier copied exactly when it names the supplier. So supplier = \"steel supplier\" ? Or maybe we need to infer? The prompt says \"Pay $4,100 to the steel supplier against what we owe.\" So supplier is \"steel supplier\". Amount is \"$4,100\".\n\nWe need to return JSON with intent pay_supplier, supplier, amount.\n\nCheck shape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should omit fields that do not apply. So include intent, supplier, amount.\n\nShould we include amount exactly as \"$4,100\"? Yes.\n\nPotential nuance: Suppliers on file: none, so maybe we cannot identify supplier, but we still output what was said. The adapter validates everything and renders confirmation from ledger, never from your text. So we just output parsing.\n\nThus output: {\"intent\":\"pay_supplier\",\"supplier\":\"steel supplier\",\"amount\":\"$4,100\"}\n\nCheck if need to handle out_of_scope? No.\n\nMake sure JSON is exactly that shape, no extra prose.\n\nWe must not add deliberation. Emit JSON immediately.\n\nWe should ensure correct quoting.\n\nPotential alternative: supplier might be ambiguous, but we still output.\n\nWe should not include customer.\n\nWe should ensure amount stays \"$4,100\" exactly.\n\nThus final answer is JSON.\n\nWe must not add any other text.\n\nWe should ensure we follow system instruction: Return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields.\n\nSo output JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465014,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 979,
+   "completion_tokens": 560,
+   "total_tokens": 1539,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 406,
+    "audio_tokens": 0,
+    "reasoning_tokens": 531,
+    "rejected_prediction_tokens": 672
+   }
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "id": "p2p_held_override",
+ "prompt": "Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-2455c7ecb3fb4b2fb3afdf7f9a7f5a7d",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1,\"override_reason\":\"the price increase was approved by Dana\",\"overrider\":\"Dana\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\n\nWe need to return JSON with intent pay_ap_invoice, ap_invoice_id 1, supplier Harbor Components? The prompt says Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\n\nWe have open AP invoices: #1 Harbor Components \u2014 total $650, balance $650 (ON THREE-WAY-MATCH HOLD)\n\nRules for pay_ap_invoice: Include ap_invoice_id when prompt names one (\"AP invoice 3\"), supplier (copied exactly) when it names supplier, and amount only when prompt states one (no amount means full balance). If prompt insists on paying despite three-way-match hold (\"pay it anyway\"), also include override_reason \u2014 justification exactly as stated \u2014 and overrider \u2014 person prompt names as approving it. Without both, held invoice cannot be proposed for payment.\n\nSo we need to include override_reason and overrider.\n\nPrompt: \"Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\"\n\nWe need to extract override_reason: \"the price increase was approved by Dana\" or \"price increase was approved by Dana\"? The spec says override_reason \u2014 the justification exactly as stated. Example? Need to copy exactly. The prompt says \"the price increase was approved by Dana.\" So override_reason should be that phrase. Overrider is Dana.\n\nShould we include supplier? The prompt doesn't name supplier, but we know from open AP invoices #1 is Harbor Components. However rule says include supplier when prompt names supplier. Prompt does not name supplier, so omit supplier? But maybe we should include? The spec: include \"supplier\" (copied exactly) when it names the supplier. Since prompt doesn't name supplier, we omit. But we have ap_invoice_id 1.\n\nAlso need to consider amount: not stated, so omit.\n\nSo JSON: {\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1,\"override_reason\":\"the price increase was approved by Dana\",\"overrider\":\"Dana\"}\n\nCheck formatting: ap_invoice_id is integer 1.\n\nShould we include override_reason exactly as \"the price increase was approved by Dana\" ? The prompt: \"Pay AP invoice 1 anyway \u2014 the price increase was approved by Dana.\" The justification is \"the price increase was approved by Dana\". That matches.\n\nPotential nuance: override_reason might be \"price increase was approved\" ? But spec says justification exactly as stated. So include full clause.\n\nWe must return exactly JSON object, no prose.\n\nWe must ensure we follow shape: intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nSo output: {\"intent\":\"pay_ap_invoice\",\"ap_invoice_id\":1,\"override_reason\":\"the price increase was approved by Dana\",\"overrider\":\"Dana\"}\n\nCheck if need to include supplier Harbor Components? The open AP invoices info is context, but prompt doesn't name supplier. Rule says omit fields that do not apply. So omit supplier.\n\nBut could we include supplier inferred? The instruction: \"include 'supplier' (copied exactly) when it names the supplier\" \u2014 implies only when prompt names supplier. So don't include.\n\nThus final answer is that JSON.\n\nWe must ensure no extra fields.\n\nReturn exactly that.\n\nPotential alternative: override_reason might be \"price increase was approved by Dana\" without \"the\". But better to include \"the price increase was approved by Dana\" as exact substring.\n\nCheck example: If prompt says \"pay it anyway\" also include override_reason \u2014 the justification exactly as stated \u2014 and overrider \u2014 the person the prompt names as approving it. So overrider is Dana.\n\nThus final JSON.\n\nWe should not include amount.\n\nMake sure to use double quotes.\n\nReturn exactly one JSON object.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464971,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 999,
+   "completion_tokens": 830,
+   "total_tokens": 1829,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 628,
+    "audio_tokens": 0,
+    "reasoning_tokens": 789,
+    "rejected_prediction_tokens": 786
+   }
+  }
+ }
+}

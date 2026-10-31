@@ -1,0 +1,37 @@
+{
+ "id": "t3_deposit",
+ "prompt": "Epsilon sent a $1,500 deposit for a future order.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-bbfb4890b2694e229f7d5719da8e1bf1",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Epsilon sent a $1,500 deposit for a future order.\"\n\nWe need to output JSON with intent record_deposit? Let's see intents list: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice.\n\nSo record_deposit is appropriate.\n\nFields: intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nWe need to copy customer names and money exactly as written. So customer: \"Epsilon\", amount: \"$1,500\" . Should we include amount? Yes.\n\nCheck rules: Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nSo amount should be \"$1,500\" exactly.\n\nNo other fields.\n\nWe should return {\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}\n\nCheck if need to include anything else? Possibly topic? No.\n\nWe must ensure JSON object only.\n\nWe are parsing layer, return exactly shape, omitting fields that do not apply.\n\nSo output that.\n\nWe must not add prose.\n\nWe should ensure correct intent: record_deposit.\n\nCheck other possibilities: record_deposit vs record_payment. Deposit for future order is record_deposit.\n\nYes.\n\nWe should not include qty.\n\nWe should ensure we don't hallucinate.\n\nReturn JSON.\n\nWe need to consider date: Today is 2026-10-30 but not needed.\n\nWe should output exactly JSON.\n\nPotential nuance: amount includes dollar sign and comma. Keep as \"$1,500\".\n\nWe should not add price_each.\n\nWe should ensure valid JSON.\n\nWe must not include extra fields like day.\n\nWe should output single JSON object.\n\nWe need to ensure we follow system: Return exactly this shape, omitting fields that do not apply.\n\nWe should do that.\n\nWe should not add explanation.\n\nWe should ensure we use double quotes.\n\nWe should output {\"intent\":\"record_deposit\",\"customer\":\"Epsilon\",\"amount\":\"$1,500\"}\n\nCheck if need to include supplier? No.\n\nWe should ensure we don't include nulls.\n\nWe should output that.\n\nWe should consider if any other intent could be record_deposit with customer Epsilon.\n\nYes.\n\nWe should output final answer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464889,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 966,
+   "completion_tokens": 565,
+   "total_tokens": 1531,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 415,
+    "audio_tokens": 0,
+    "reasoning_tokens": 536,
+    "rejected_prediction_tokens": 635
+   }
+  }
+ }
+}

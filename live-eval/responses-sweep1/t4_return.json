@@ -1,0 +1,37 @@
+{
+ "id": "t4_return",
+ "prompt": "Delta returned 2 defective brackets.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-561a3be164044e2593ff53f391907f64",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Delta returned 2 defective brackets.\"\n\nWe need to output JSON with intent record_return etc.\n\nWe have rules: intents list includes record_return, etc.\n\nWe need to map: customer Delta, qty 2, sku? Items: BRK-100 Finished Bracket \u2014 price $125.00. So sku likely BRK-100. But prompt says \"brackets\" - should map to BRK-100. Need to infer sku.\n\nWe have fields: intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nFor record_return, what fields? Likely customer, qty, sku, maybe amount? The prompt says 2 defective brackets. No amount stated. So qty 2, customer Delta, sku BRK-100.\n\nCheck examples: Not given but we need to follow shape.\n\nWe must copy customer names exactly as written: Delta.\n\nqty is unit count as integer: 2.\n\nsku: \"BRK-100\" ? Should we include? The spec says sku when it names an item. Prompt says \"brackets\" - ambiguous but we have only one item BRK-100 Finished Bracket. So likely sku is BRK-100.\n\nWe should output {\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}\n\nBut need to consider amount? No.\n\nCheck other intents: record_return likely needs to reference invoice? But open invoices: #1 Delta \u2014 total $1,250.00. That is 10 brackets at $125 each. Returning 2 would be $250.\n\nBut rules: Copy money exactly as written. No money in prompt.\n\nSo output minimal.\n\nWe must ensure JSON exactly shape, omitting fields that do not apply.\n\nWe should not include amount.\n\nWe should include sku.\n\nPotential nuance: Should we include price_each? No.\n\nWe must ensure intent is record_return.\n\nWe must not add extra prose.\n\nWe need to return exactly one JSON object.\n\nWe should consider if day needed? No.\n\nWe should output: {\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}\n\nCheck if need to include topic? No.\n\nMake sure qty integer.\n\nWe should ensure we follow spec: Return exactly this shape, omitting fields that do not apply.\n\nWe should not include supplier.\n\nWe should ensure we don't hallucinate.\n\nWe should output that.\n\nPotential alternative: sku might be \"BRK-100\" exactly. Could also be \"BRK-100 Finished Bracket\" but sku is code. Use BRK-100.\n\nWe should ensure we handle correctly.\n\nWe must not add amount.\n\nWe should output JSON.\n\nWe need to consider if record_return expects amount? But prompt doesn't state amount, so omit.\n\nWe should output final JSON.\n\nWe must ensure no extra text.\n\nWe should do that."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464892,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 977,
+   "completion_tokens": 642,
+   "total_tokens": 1619,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 456,
+    "audio_tokens": 0,
+    "reasoning_tokens": 611,
+    "rejected_prediction_tokens": 846
+   }
+  }
+ }
+}

@@ -51,7 +51,26 @@ the open:
   plain language. Ask for a galvanized finish on an aluminum bracket and
   the system refuses, naming the rule: *"Galvanized finish is available
   only on steel brackets."*
-- **One dispatch table, four doors.** 58 commands served identically to an
+- **Procure-to-pay with a three-way match.** The buying mirror of
+  order-to-cash: suppliers → requisitions (approved before they
+  convert) → purchase orders → goods receipts (Dr inventory / Cr
+  GR-IR clearing) → supplier invoices (GR-IR clears at the PO price;
+  the difference posts to purchase price variance) → payments. The
+  three-way match is computed live from the three documents on every
+  read: invoice more than was received, or at any price but the PO
+  price, and the invoice lands **on hold** — recorded, visible, and
+  unpayable until the variance is resolved or a named person
+  overrides it with a recorded reason (the variance facts stay on
+  the invoice either way).
+- **Controls foundations.** Fiscal periods gate the single posting
+  path — close a period and every door refuses postings dated into
+  it, rolling the whole document transition back. A users/roles
+  registry backs a segregation-of-duties rule: payments above a
+  configured threshold require a named actor and a *different*
+  approver with an approver/admin role, recorded on the payment and
+  its journal entry. (See ENTERPRISE_GAPS.md for the honest map of
+  what enterprise scale still needs beyond this, and in what order.)
+- **One dispatch table, four doors.** 85 commands served identically to an
   operator CLI, an MCP server on stdio, an HTTP API, and the natural-language
   agent — JSON out, plain-language refusals, exit codes 0/1/2. Anything a
   human can do, an agent can drive; there is no second, weaker API.
@@ -59,7 +78,10 @@ the open:
   English ("Invoice Acme for the 40 units we shipped Tuesday") becomes
   *proposed* dispatch calls. The confirmation is rendered from actual ledger
   data — never from model prose — and nothing posts until a human confirms.
-  The agent also answers questions and can propose releasing a plan.
+  The agent also answers questions, can propose releasing a plan, receives
+  goods against purchase orders, and pays supplier invoices — including
+  the held ones, where a payment can only be proposed when the prompt
+  itself carries the match-override reason and the approver's name.
 - **AI-native MRP on the Warp Speed pattern.** Materials planning that is
   *dynamic* (every run recomputes from current orders, stock, BOMs, and
   configurations — plans are never stored, so a changed order re-plans
@@ -83,9 +105,10 @@ manufacturer making metal brackets.
 Pure Rust, three crates in one workspace:
 
 - `erpcraft-core` — the deterministic core: ledger schema and invariant
-  triggers, the posting engine, order-to-cash, the variant configurator,
-  the audit trail, and MRP. The evaluator and the planner are pure
-  functions of current state.
+  triggers, the posting engine, order-to-cash, procure-to-pay, the
+  controls foundations (fiscal periods, approval rule), the variant
+  configurator, the audit trail, and MRP. The evaluator and the planner
+  are pure functions of current state.
 - `erpcraft-server` — an Axum HTTP API over the core.
 - `erpcraft-cli` — the dispatch table (CLI + MCP doors) and the
   natural-language agent adapter over it.
@@ -96,7 +119,7 @@ corrections are reversing entries; agents propose, humans confirm, then it
 posts; deterministic core with AI at the edges (models parse, author behind
 the gate, and explain — they never evaluate the configurator or compute a
 plan); every command has a test, and the hand-computed oracle-day trial
-balance is the acceptance suite. 95 automated tests are green.
+balance is the acceptance suite. 146 automated tests are green.
 
 The AI author behind this project works professionally in SAP variant
 configuration (LO-VC) — the configurator's dependency semantics come from
@@ -108,13 +131,21 @@ stringly-typed syntax.
 - **Baseten — Muse Spark Open (`meta-models/muse-spark-open-1026`), used
   live.** The agent's live parse route runs on Baseten (hackathon grant).
   The shipped demo fixture was recorded from the actual model (schema-valid
-  output), and the payment and price-conflict prompts were spot-checked
-  live and replayed through the real agent binary with identical outcomes.
-  Total live usage: ~5,600 tokens against the grant.
+  output). On Oct 31 the evaluation went the whole distance: **all 23
+  agent acceptance scenarios** — the 12 contract prompts, both MRP
+  intents, the configurator what-if refusal, and the procure-to-pay
+  intents — were sent to the live model and replayed through the real
+  binary; every one landed on the exact contract outcome (postings,
+  refusals, balances). The full accounting, including the model's
+  stochastic reasoning-loop failures and the two prompt fixes they
+  produced, is in LIVE_EVAL.md. Total live usage: ~150,600 tokens
+  against the grant.
 - **Meta Model API — wired as a route.** The agent's client supports the
   Meta Model API (`--client meta`) alongside Baseten, the recorded fixture,
   and a deterministic offline stub, which remains the default so the demo
-  and the test suite run with no network at all.
+  and the test suite run with no network at all. The route's key verifies
+  live; the $150 credit was never confirmed as landed in the account, so
+  no spend was run against it.
 
 ## What to try (5-minute demo)
 
@@ -152,7 +183,17 @@ E="cargo run -p erpcraft-cli --"
 Also worth trying: `cargo test` (the invariant suite, including the oracle
 day), posting an *unbalanced* journal entry over HTTP and watching the
 database itself refuse it (HTTP 400), and `erpcraft mcp` to drive the same
-58 commands as MCP tools.
+85 commands as MCP tools.
+
+And the buying side, in about a minute: `$E create_supplier --name 'Harbor
+Components'`, a `create_purchase_order` for 10 brackets at $60.00, then
+`$E receive_goods` (watch Dr Raw Materials / Cr GR-IR post), and
+`$E record_ap_invoice` at $65.00 — the invoice lands **on hold** on the
+price variance and `pay_ap_invoice` refuses. Either `override_ap_match`
+with a recorded reason releases it, or just tell the agent:
+`$E agent "Pay AP invoice 1 anyway — the price increase was approved by
+Dana."` — the proposal shows the hold, the variance, and the override
+step before the payment, and posts only when you confirm.
 
 ## Repository
 
@@ -168,11 +209,12 @@ https://github.com/BLTCPT/erpcraft — public, dual-licensed MIT / Apache-2.0.
   detects the request, flags the conflict, and refuses rather than posting
   a wrong price.
 - **Early alpha:** this is the working core of the ERP vision — ledger,
-  order-to-cash, configurator, agent surface, MRP, audit — not yet the
-  purchasing, payroll, tax, and multi-currency depth the full vision
-  includes. Those are parked, by design, in ROADMAP.md; the invariants
-  they will stand on are the part that had to be right first, and they are
-  the part that is test-proven here.
+  order-to-cash, procure-to-pay, controls foundations, configurator,
+  agent surface, MRP, audit — not yet the payroll, tax-engine,
+  multi-currency, and multi-entity depth the full vision includes.
+  Those are mapped honestly, with a build order, in ENTERPRISE_GAPS.md;
+  the invariants they will stand on are the part that had to be right
+  first, and they are the part that is test-proven here.
 
 ## Team
 

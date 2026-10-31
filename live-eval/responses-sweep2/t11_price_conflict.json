@@ -1,0 +1,37 @@
+{
+ "id": "t11_price_conflict",
+ "prompt": "Invoice Acme for 40 units at $130 each.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-c25bfd6f3cc34980aca16731aa8851a9",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Invoice Acme for 40 units at $130 each.\n\nWe need to return JSON with intent invoice_shipment, customer Acme, qty 40, price_each $130, sku? The prompt says 40 units at $130 each. But which SKU? Items: BRK-100 Finished Bracket \u2014 price $125.00, standard cost $68.00. The prompt says \"Invoice Acme for 40 units at $130 each.\" It doesn't explicitly say SKU. But we have only one item BRK-100. Should we infer sku? The rules: sku when it names an item. The prompt doesn't name item. But maybe we should include sku? Let's see examples. The spec says: include sku when prompt names an item. Here prompt doesn't name item. So maybe omit sku? However typical invoice needs sku. But rule says omit fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields. So if prompt doesn't state sku, we omit sku.\n\nBut also need to consider qty is integer, price_each only when prompt states per-unit price (\"at $130 each\"). So price_each = \"$130\" or \"$130 each\"? Rule: Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it. So price_each should be exactly as written: \"$130\". The prompt says \"at $130 each.\" So we copy \"$130\". Should we include \"each\"? Probably just \"$130\". The example in rules: price_each only when prompt states a per-unit price (\"at $130 each\"). So value is \"$130\". Keep as string.\n\nAlso amount? Not needed. qty 40.\n\nIntent invoice_shipment.\n\nCustomer Acme.\n\nWe should also include day? No.\n\nSo JSON: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}\n\nBut should we include sku BRK-100? The prompt says \"40 units\" - ambiguous. However maybe we should infer sku BRK-100 because it's the only item? The rules say sku when it names an item. It doesn't name item, so omit. But maybe the adapter expects sku? Let's check typical tasks: Invoice Acme for 40 units at $130 each. Could be they expect sku BRK-100 inferred? Let's see other similar tasks in this environment: Usually they want to infer sku if only one item exists? But rule says \"when the prompt names an item\" - strict. So we should not invent sku.\n\nHowever we have to consider that the system might want sku BRK-100. Let's see instruction: \"sku\": \"...\" - when prompt states one. The prompt says \"40 units\" - not naming sku. So omit.\n\nAlso need to consider amount vs price_each. We have price_each.\n\nReturn exactly JSON object.\n\nWe must not add extra fields.\n\nSo output: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme\",\"qty\":40,\"price_each\":\"$130\"}\n\nCheck if need to include sku? Could also include sku BRK-100 if we interpret \"units\" as BRK-100. But rule says omit what prompt does not state \u2014 never invent an id. So don't invent sku.\n\nThus final answer is that JSON.\n\nWe must ensure no prose, no journal lines. Just JSON.\n\nWe should ensure formatting exactly.\n\nPotential nuance: price_each should be \"$130\" exactly. Could be \"$130 each\" ? The rule says copy money exactly as written. \"$130\" is money. So keep \"$130\".\n\nReturn that.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465036,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 977,
+   "completion_tokens": 777,
+   "total_tokens": 1754,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 559,
+    "audio_tokens": 0,
+    "reasoning_tokens": 745,
+    "rejected_prediction_tokens": 967
+   }
+  }
+ }
+}

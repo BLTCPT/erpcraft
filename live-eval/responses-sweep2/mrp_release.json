@@ -1,0 +1,37 @@
+{
+ "id": "mrp_release",
+ "prompt": "Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-863d17ba16d84e259b40ba074f6ae233",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:60\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.\"\n\nWe need to return JSON with intent mrp_release, key = \"purchase:FST-SET:2026-11-10:60\", and include sku/qty/need_date when prompt restates demand the plan was computed from.\n\nThe prompt says \"from the 200 BRK-100 by 2026-11-15 plan.\" That is restating demand: sku BRK-100, qty 200, need_date 2026-11-15.\n\nSo we should include sku, qty, need_date.\n\nCheck rules: Releasing a planned order is mrp_release: the prompt names the planned order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) \u2014 copy it into \"key\" exactly, and include sku/qty/need_date when the prompt restates the demand the plan was computed from.\n\nSo we need to emit:\n\n{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:60\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}\n\nShould we include anything else? No.\n\nCheck shape: intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nWe have intent, key, sku, qty, need_date.\n\nMake sure qty is integer.\n\nReturn exactly JSON object.\n\nNo prose.\n\nWe must ensure correct JSON.\n\nPotential nuance: sku exactly as written: BRK-100. Yes.\n\nNeed_date as YYYY-MM-DD: 2026-11-15.\n\nKey exactly: purchase:FST-SET:2026-11-10:60\n\nWe should not include extra fields.\n\nReturn that.\n\nCheck if any other interpretation: Could also be just key without sku/qty/need_date? But rule says include when prompt restates demand. It does restate: \"200 BRK-100 by 2026-11-15\". So include.\n\nThus final answer is JSON.\n\nWe must not add deliberation.\n\nWe need to output JSON immediately.\n\nEnsure valid JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465052,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1081,
+   "completion_tokens": 544,
+   "total_tokens": 1625,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 421,
+    "audio_tokens": 0,
+    "reasoning_tokens": 489,
+    "rejected_prediction_tokens": 440
+   }
+  }
+ }
+}

@@ -1,0 +1,37 @@
+{
+ "id": "oos_purchase_order",
+ "prompt": "Create a purchase order for more steel.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-13de38c5d21449df82443d66603d0761",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Create a purchase order for more steel.\"\n\nWe need to return JSON with intent. The intents listed: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice. Anything else (payroll, tax, multi-currency) is out_of_scope.\n\nCreating a purchase order is out_of_scope per rules: Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope)\n\nSo intent out_of_scope, topic \"...\". Need to provide topic. Probably \"create purchase order\" or \"buy_materials\"? But rule says creating a purchase order is out_of_scope. So we should return {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"} or \"buy_materials\"? Let's see examples: Anything else (payroll, tax, multi-currency) is {\"intent\": \"out_of_scope\", \"topic\": \"...\"}. So topic should describe what was asked. Probably \"create purchase order\" or \"buy_materials\". The prompt says \"Create a purchase order for more steel.\" So topic could be \"create purchase order\" or \"buy_materials\". Need to choose.\n\nWe must return exactly shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo output: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nAlternatively topic \"buy_materials\"? But better to be descriptive. The instruction: Anything else (payroll, tax, multi-currency) is {\"intent\": \"out_of_scope\", \"topic\": \"...\"}. So topic is free text summarizing.\n\nWe should return out_of_scope.\n\nWe must not include other fields.\n\nWe must ensure JSON valid.\n\nWe should not add prose.\n\nReturn exactly JSON object.\n\nWe need to consider if buy_materials intent exists. But the rule explicitly says creating a purchase order is out_of_scope. So we must not use buy_materials. The buy_materials maybe is different? But instruction says receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope). So we follow that.\n\nThus answer is out_of_scope.\n\nWe should ensure we copy correctly.\n\nNo other fields.\n\nWe must not deliberate over omitted fields. So just emit JSON.\n\nWe should ensure we don't include reasoning.\n\nWe need to output JSON with intent out_of_scope and topic.\n\nPotential topic: \"create purchase order\" or \"buy_materials\". Let's use \"create purchase order\".\n\nWe should ensure we follow exact shape: {\"intent\": \"...\", \"customer\": \"...\", ...}. So we include intent and topic.\n\nWe should not include qty etc.\n\nWe must ensure we don't add extra fields.\n\nWe should output: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nThat satisfies.\n\nWe need to consider if we should include supplier? No.\n\nWe should output exactly that.\n\nWe must not add explanation.\n\nWe should ensure JSON is valid.\n\nWe should not include trailing comma.\n\nWe should output immediately.\n\nWe need to ensure we don't violate any other rule.\n\nWe should not convert money.\n\nWe should not add day.\n\nWe should just output JSON.\n\nWe should ensure we use double quotes.\n\nWe should output one JSON object.\n\nWe should not add prose.\n\nWe should do that.\n\nWe need to consider if the system expects out_of_scope with topic \"buy_materials\"? Could be either. But \"create purchase order\" is more accurate.\n\nWe should output that.\n\nWe should ensure we don't include reasoning.\n\nWe should output final answer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465039,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 973,
+   "completion_tokens": 780,
+   "total_tokens": 1753,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 574,
+    "audio_tokens": 0,
+    "reasoning_tokens": 757,
+    "rejected_prediction_tokens": 868
+   }
+  }
+ }
+}

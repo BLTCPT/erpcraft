@@ -1,0 +1,37 @@
+{
+ "id": "t6_rent",
+ "prompt": "Record this month's rent, $1,200.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-aefc287ed57d43d7ad02073a0a1e65c5",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_rent\",\"amount\":\"$1,200\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Record this month's rent, $1,200.\"\n\nWe need to return JSON with intent record_rent, amount \"$1,200\" ? Need to copy exactly as written. The prompt says $1,200. So amount \"$1,200\". Possibly day? Not needed.\n\nWe must follow shape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nIntents: ... record_rent etc.\n\nSo intent record_rent, amount \"$1,200\"\n\nWe should omit fields that do not apply. So just intent and amount.\n\nWe must ensure we return exactly JSON object and nothing else.\n\nCheck rules: Copy customer names and money exactly as written (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nSo amount \"$1,200\" correct.\n\nNo other fields.\n\nWe should output {\"intent\":\"record_rent\",\"amount\":\"$1,200\"}\n\nPotentially need to include topic? No.\n\nMake sure JSON valid.\n\nWe are parsing layer, return exactly shape omitting fields that do not apply.\n\nThus final answer is JSON.\n\nWe must not add prose.\n\nWe should ensure we follow system: Return exactly this shape, omitting fields that do not apply.\n\nSo output JSON.\n\nPotential nuance: Should we include day? No.\n\nThus final.\n\nWe need to ensure we don't add extra fields like qty.\n\nWe should output minimal.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464898,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 963,
+   "completion_tokens": 394,
+   "total_tokens": 1357,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 303,
+    "audio_tokens": 0,
+    "reasoning_tokens": 370,
+    "rejected_prediction_tokens": 334
+   }
+  }
+ }
+}

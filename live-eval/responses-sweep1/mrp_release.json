@@ -1,0 +1,37 @@
+{
+ "id": "mrp_release",
+ "prompt": "Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-e863d299a1324f129700cfb6422672ae",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\": \"mrp_release\", \"key\": \"purchase:FST-SET:2026-11-10:60\", \"sku\": \"BRK-100\", \"qty\": 200, \"need_date\": \"2026-11-15\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.\"\n\nWe need to output JSON with intent mrp_release, key, sku, qty, need_date.\n\nRules:\n- Releasing a planned order is mrp_release: the prompt names the planned order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) \u2014 copy it into \"key\" exactly, and include sku/qty/need_date when the prompt restates the demand the plan was computed from.\n\nSo key = \"purchase:FST-SET:2026-11-10:60\"\nsku = \"BRK-100\" ? Need to copy exactly. The prompt says \"200 BRK-100\". So sku is BRK-100.\nqty = 200\nneed_date = 2026-11-15\n\nWe must ensure format: {\"intent\": \"mrp_release\", \"key\": \"...\", \"sku\": \"...\", \"qty\": ..., \"need_date\": \"...\"}\n\nCheck other fields: Should we include anything else? No.\n\nWe must return exactly this shape, omitting fields that do not apply.\n\nWe need to ensure JSON is valid.\n\nIntent is mrp_release.\n\nWe should not include customer, supplier, etc.\n\nWe need to ensure we copy sku exactly: BRK-100\n\nqty integer 200\n\nneed_date YYYY-MM-DD: 2026-11-15\n\nkey exactly as purchase:FST-SET:2026-11-10:60\n\nWe should output that.\n\nCheck if any other nuance: The prompt says \"Release purchase:FST-SET:2026-11-10:60 from the 200 BRK-100 by 2026-11-15 plan.\"\n\nYes.\n\nWe must not add prose.\n\nReturn exactly JSON object.\n\nWe must ensure we don't add extra fields like amount, etc.\n\nWe should output:\n\n{\"intent\": \"mrp_release\", \"key\": \"purchase:FST-SET:2026-11-10:60\", \"sku\": \"BRK-100\", \"qty\": 200, \"need_date\": \"2026-11-15\"}\n\nCheck spec: For mrp_release, include sku/qty/need_date when prompt restates demand the plan was computed from. Here it does.\n\nWe should ensure we follow ordering? Not required but nice.\n\nWe must not include configuration.\n\nWe should ensure we don't hallucinate.\n\nWe need to consider if need_date should be included as 2026-11-15. Yes.\n\nWe should output exactly that JSON.\n\nPotential edge: Should we include day? No.\n\nWe must ensure we don't add \"topic\".\n\nWe should output minimal.\n\nWe need to ensure we follow system instruction: Return exactly this shape, omitting fields that do not apply.\n\nWe should not include \"customer\": etc.\n\nWe should ensure JSON is valid and no trailing comma.\n\nWe should not add explanation.\n\nWe should output JSON object.\n\nWe need to ensure we handle knowledge cutoff etc. Not needed.\n\nWe should output final answer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464943,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1068,
+   "completion_tokens": 713,
+   "total_tokens": 1781,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 549,
+    "audio_tokens": 0,
+    "reasoning_tokens": 649,
+    "rejected_prediction_tokens": 599
+   }
+  }
+ }
+}

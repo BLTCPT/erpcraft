@@ -1,0 +1,37 @@
+{
+ "id": "mrp_check_build",
+ "prompt": "Can we build 200 BRK-100 by Nov 15?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-d7f6ffbab66144e4bbe23677cd488e69",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Can we build 200 BRK-100 by Nov 15?\" Today is 2026-10-31. Need to produce JSON.\n\nIntent: mrp_check with sku, qty, need_date.\n\nRules: Planning questions are mrp_check: \"Can we build 200 BRK-100 by Nov 15?\" adds sku (copied exactly), qty, and need_date as YYYY-MM-DD (resolve month names against today; a named date already past this year means next year).\n\nToday 2026-10-31, Nov 15 is in future this year, so 2026-11-15.\n\nsku: BRK-100 exactly.\n\nqty: 200\n\nneed_date: 2026-11-15\n\nWe must return exactly JSON shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo output: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\"}\n\nCheck spec: shape includes intent, customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nWe should include only intent, sku, qty, need_date.\n\nMake sure JSON valid.\n\nNo extra prose.\n\nWe are parsing layer, must not add prose.\n\nReturn exactly that.\n\nPotential nuance: qty is integer. Yes.\n\nMake sure to copy sku exactly: BRK-100\n\nWe should not include configuration.\n\nThus final answer is JSON.\n\nWe must ensure we don't add deliberation.\n\nWe should output JSON object.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465229,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1099,
+   "completion_tokens": 383,
+   "total_tokens": 1482,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 291,
+    "audio_tokens": 0,
+    "reasoning_tokens": 345,
+    "rejected_prediction_tokens": 353
+   }
+  }
+ }
+}

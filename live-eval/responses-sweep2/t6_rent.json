@@ -1,0 +1,37 @@
+{
+ "id": "t6_rent",
+ "prompt": "Record this month's rent, $1,200.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-2804c815f7da4ecba2c6c8a7d3b26e55",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_rent\",\"amount\":\"$1,200\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Record this month's rent, $1,200.\n\nWe need to return JSON with intent record_rent, amount \"$1,200\" ? Need to copy exactly as written. The prompt says \"$1,200.\" So amount \"$1,200\". Possibly need day? Not given. No day.\n\nWe must return exactly shape. Intent record_rent.\n\nFields: intent, amount.\n\nWe should omit others.\n\nReturn {\"intent\":\"record_rent\",\"amount\":\"$1,200\"}\n\nCheck rules: Copy customer names and money exactly as written (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nSo amount \"$1,200\" correct.\n\nNo other fields.\n\nWe must emit JSON immediately, without deliberating over omitted fields. So just output JSON.\n\nWe need to ensure valid JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465017,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 976,
+   "completion_tokens": 201,
+   "total_tokens": 1177,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 0
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 140,
+    "audio_tokens": 0,
+    "reasoning_tokens": 177,
+    "rejected_prediction_tokens": 287
+   }
+  }
+ }
+}

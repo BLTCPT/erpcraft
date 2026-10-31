@@ -1,0 +1,37 @@
+{
+ "id": "t8b_name_trap",
+ "prompt": "Invoice Acme Manufacturing for 10 brackets.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-5829654be6fc42f18ab7b668d3a4a06e",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Invoice Acme Manufacturing for 10 brackets.\"\n\nWe need to return JSON with intent invoice_shipment etc.\n\nWe have customers on file: Acme, Beta, Delta, Epsilon\nItems: BRK-100 Finished Bracket \u2014 price $125.00, standard cost $68.00\n\nPrompt says Invoice Acme Manufacturing for 10 brackets.\n\nWe need to map customer: \"Acme Manufacturing\" - but customers on file is Acme. Should we copy exactly as written? Rules: Copy customer names and money exactly as written in the prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\n\nSo customer should be \"Acme Manufacturing\" exactly as written.\n\nqty 10\n\nsku? The prompt says \"10 brackets.\" Items: BRK-100 Finished Bracket. Should we infer sku BRK-100? The rules: sku when it names an item. Does \"brackets\" count as naming item? Probably yes, we should map to BRK-100. But need to be careful: The spec says sku is copied exactly. But we have item BRK-100 Finished Bracket. The prompt says brackets. Might be ambiguous. However typical tasks: invoice_shipment requires customer, qty, sku, price_each? Let's see.\n\nWe have no price_each stated in prompt. So we omit.\n\nday? Today is 2026-10-30. Prompt says no day. So omit? Or day is \"today\"? Rules: day is weekday name as written (\"Tuesday\") or \"today\". If not stated, omit.\n\nWe need to produce JSON: intent invoice_shipment, customer Acme Manufacturing, qty 10, sku BRK-100 ?\n\nCheck examples: Need to decide sku inference. The system says Items: BRK-100 Finished Bracket \u2014 price $125.00. So brackets likely refers to BRK-100. Should include sku.\n\nAlso need to consider amount? No amount stated.\n\nSo output: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}\n\nBut should we include amount? No.\n\nCheck other fields: need_date etc not.\n\nWe must return exactly this shape, omitting fields that do not apply.\n\nWe should not include price_each because not stated.\n\nWe should not invent.\n\nPotential nuance: The customer on file is Acme, but prompt says Acme Manufacturing. Should we use Acme Manufacturing? The rule says copy customer names exactly as written. So yes.\n\nWe must ensure JSON valid.\n\nWe should not add extra prose.\n\nReturn exactly one JSON object.\n\nWe need to consider if qty is integer. Yes 10.\n\nWe should not include day.\n\nWe should ensure we don't include supplier etc.\n\nThus final answer: {\"intent\":\"invoice_shipment\",\"customer\":\"Acme Manufacturing\",\"qty\":10,\"sku\":\"BRK-100\"}\n\nCheck if sku should be omitted because prompt didn't explicitly say BRK-100. The rule: sku when it names an item. \"brackets\" is generic but we have only one item that is bracket. Might be considered naming. In many similar tasks, they expect sku inference. Could also be that we should omit sku if not explicitly named. But the instruction says \"sku\": \"...\" - when prompt states. The prompt says \"10 brackets\" - that is an item description. The Items list says BRK-100 Finished Bracket. So we can map.\n\nIf we omit sku, the adapter might not know what to invoice. Better to include.\n\nAlternative: Could include topic? No.\n\nWe should output minimal.\n\nWe must not include amount.\n\nWe should ensure we follow JSON shape: include intent, customer, qty, sku.\n\nWe should not include amount as string.\n\nWe should ensure we don't add extra fields like order_id.\n\nThus final output is JSON.\n\nWe need to ensure we don't add commentary.\n\nWe should return exactly that JSON.\n\nPotential edge: The customer name might need to be exactly \"Acme Manufacturing\" - yes.\n\nWe should not add price_each.\n\nWe should not add day.\n\nWe should ensure we use double quotes.\n\nWe should not add trailing comma.\n\nWe should output single line JSON.\n\nWe must not add prose.\n\nWe should comply.\n\nWe should also consider if we need to include \"amount\" or \"price_each\" default? No.\n\nWe should output.\n\nWe should ensure we handle reasoning strength 1.\n\nWe should output final JSON.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464913,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 961,
+   "completion_tokens": 949,
+   "total_tokens": 1910,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 669,
+    "audio_tokens": 0,
+    "reasoning_tokens": 915,
+    "rejected_prediction_tokens": 1284
+   }
+  }
+ }
+}

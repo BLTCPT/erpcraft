@@ -1,0 +1,37 @@
+{
+ "id": "mrp_check_plain",
+ "prompt": "What are we short on?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-0764ab60eb354035b7face88aae21f83",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"What are we short on?\" This is planning question mrp_check plain.\n\nWe need to return JSON: {\"intent\": \"mrp_check\"}\n\nRules: Planning questions are mrp_check: \"What are we short on?\" is a plain {\"intent\": \"mrp_check\"}; etc.\n\nWe must return exactly that shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo output: {\"intent\":\"mrp_check\"}\n\nWe must ensure no extra fields.\n\nWe are parsing layer. Need to output JSON object.\n\nWe should not include prose.\n\nThus final answer is JSON.\n\nWe need to consider knowledge cutoff etc. Not needed.\n\nWe must ensure we follow format.\n\nWe should output {\"intent\": \"mrp_check\"}\n\nThat's it.\n\nWe must not add topic etc.\n\nWe should ensure we don't add reasoning.\n\nWe need to output exactly JSON.\n\nWe should ensure we use correct quoting.\n\nWe should not add extra whitespace? It's okay.\n\nWe must not include deliberation.\n\nWe should output JSON immediately.\n\nWe need to ensure we don't hallucinate.\n\nWe should output that.\n\nWe need to consider that we are ERPCraft parsing layer. Return exactly shape.\n\nWe should output {\"intent\":\"mrp_check\"}\n\nWe should not include other fields.\n\nWe should ensure we follow instruction: omit fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo final output is JSON.\n\nWe should not add commentary.\n\nWe should ensure we don't add extra text.\n\nWe should output JSON object.\n\nWe should ensure we use double quotes.\n\nWe should output final answer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465178,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1091,
+   "completion_tokens": 349,
+   "total_tokens": 1440,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 240,
+    "audio_tokens": 0,
+    "reasoning_tokens": 332,
+    "rejected_prediction_tokens": 523
+   }
+  }
+ }
+}

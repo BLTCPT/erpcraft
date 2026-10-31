@@ -80,6 +80,27 @@ pub struct ParseInvoice {
     pub balance_cents: i64,
 }
 
+/// A procurement order still open for receiving (P2P context).
+#[derive(Debug, Clone)]
+pub struct ParsePo {
+    pub id: i64,
+    pub supplier_name: String,
+    pub total_cents: i64,
+    pub received_cents: i64,
+}
+
+/// A supplier invoice still carrying a balance (P2P context) —
+/// `status` includes `on_hold`, so the model can see a match hold
+/// exists before it ever proposes a payment.
+#[derive(Debug, Clone)]
+pub struct ParseApInvoice {
+    pub id: i64,
+    pub supplier_name: String,
+    pub total_cents: i64,
+    pub balance_cents: i64,
+    pub status: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParseRequest {
     pub prompt: String,
@@ -87,6 +108,9 @@ pub struct ParseRequest {
     pub customers: Vec<String>,
     pub items: Vec<ParseItem>,
     pub open_invoices: Vec<ParseInvoice>,
+    pub suppliers: Vec<String>,
+    pub open_purchase_orders: Vec<ParsePo>,
+    pub open_ap_invoices: Vec<ParseApInvoice>,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,11 +201,19 @@ pub struct Proposal {
 #[derive(Debug)]
 enum GateCall {
     IssueInvoice(i64),
-    Dispatch { command: String, args: Value },
+    Dispatch {
+        command: String,
+        args: Value,
+    },
+    /// Several dispatch calls authorized by the one confirmation,
+    /// run in order (an AP match override immediately followed by
+    /// the payment it releases). The human sees every step in the
+    /// rendered confirmation before confirming any of them.
+    Sequence(Vec<(String, Value)>),
 }
 
 impl Proposal {
-    /// The confirm half of the gate: run the one posting call
+    /// The confirm half of the gate: run the posting call(s)
     /// through the dispatch table, tagged as the agent door.
     pub fn confirm(&self, conn: &mut Connection) -> Result<Value, AgentError> {
         let result = match &self.gate {
@@ -192,6 +224,15 @@ impl Proposal {
                 &json!({ "invoice_id": invoice_id }),
             ),
             GateCall::Dispatch { command, args } => dispatch(conn, Door::Agent, command, args),
+            GateCall::Sequence(calls) => {
+                let mut combined = serde_json::Map::new();
+                for (command, args) in calls {
+                    let step =
+                        dispatch(conn, Door::Agent, command, args).map_err(AgentError::Dispatch)?;
+                    combined.insert(command.clone(), step);
+                }
+                Ok(Value::Object(combined))
+            }
         };
         result.map_err(AgentError::Dispatch)
     }
@@ -271,6 +312,12 @@ impl<C: ModelClient> Agent<C> {
         let invoices = self.call(conn, "list_invoices", &json!({}))?;
         let invoice_rows: Vec<Value> = invoices.as_array().cloned().unwrap_or_default();
 
+        // Procure-to-pay context, the same reads the P2P propose
+        // paths resolve against below.
+        let supplier_rows = self.call(conn, "list_suppliers", &json!({}))?;
+        let po_rows = self.call(conn, "list_procurement_orders", &json!({}))?;
+        let ap_rows = self.call(conn, "list_ap_invoices", &json!({}))?;
+
         let request = ParseRequest {
             prompt: prompt.to_string(),
             today: self.today.clone(),
@@ -287,6 +334,43 @@ impl<C: ModelClient> Agent<C> {
                     customer_name: j_str(inv, "customer_name").to_string(),
                     total_cents: j_i64(inv, "total_cents"),
                     balance_cents: j_i64(inv, "balance_cents"),
+                })
+                .collect(),
+            suppliers: supplier_rows
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|s| j_str(s, "name").to_string())
+                .collect(),
+            open_purchase_orders: po_rows
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter(|po| matches!(j_str(po, "status"), "open" | "partially_received"))
+                .map(|po| ParsePo {
+                    id: j_i64(po, "id"),
+                    supplier_name: j_str(po, "supplier_name").to_string(),
+                    total_cents: j_i64(po, "total_cents"),
+                    received_cents: j_i64(po, "received_cents"),
+                })
+                .collect(),
+            open_ap_invoices: ap_rows
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter(|inv| {
+                    matches!(j_str(inv, "status"), "open" | "partially_paid" | "on_hold")
+                        && j_i64(inv, "balance_cents") > 0
+                })
+                .map(|inv| ParseApInvoice {
+                    id: j_i64(inv, "id"),
+                    supplier_name: j_str(inv, "supplier_name").to_string(),
+                    total_cents: j_i64(inv, "total_cents"),
+                    balance_cents: j_i64(inv, "balance_cents"),
+                    status: j_str(inv, "status").to_string(),
                 })
                 .collect(),
         };
@@ -323,6 +407,8 @@ impl<C: ModelClient> Agent<C> {
             }
             "mrp_check" => self.propose_mrp_check(conn, prompt, &intent, &ctx),
             "mrp_release" => self.propose_mrp_release(conn, prompt, &intent, &ctx),
+            "receive_goods" => self.propose_receive_goods(conn, prompt, &intent),
+            "pay_ap_invoice" => self.propose_pay_ap_invoice(conn, prompt, &intent, options),
             "out_of_scope" => {
                 let topic = intent.topic.as_deref().unwrap_or("that");
                 Ok(ProposeOutcome::OutOfScope {
@@ -331,9 +417,10 @@ impl<C: ModelClient> Agent<C> {
                         "I don't handle {topic} yet. I can invoice shipped units, record \
                          payments, deposits and returns, buy materials on credit, pay \
                          suppliers, issue materials, record labor and production, and \
-                         post rent, interest and depreciation. I can also check material \
-                         plans — ask \"What are we short on?\" or \"Can we build 200 \
-                         BRK-100 by 2026-11-15?\" — and propose releasing a planned order."
+                         post rent, interest and depreciation. I can also receive goods \
+                         against a purchase order, pay supplier (AP) invoices, check \
+                         material plans — ask \"What are we short on?\" or \"Can we build \
+                         200 BRK-100 by 2026-11-15?\" — and propose releasing a planned order."
                     ),
                 })
             }
@@ -1341,6 +1428,685 @@ impl<C: ModelClient> Agent<C> {
         })))
     }
 
+    // -- P2P intents ---------------------------------------------------
+    //
+    // Receiving against a procurement order and paying a supplier
+    // (AP) invoice, mirroring the invoice/payment pair on the sales
+    // side: resolve against live dispatch reads, render the
+    // confirmation from the documents themselves, and gate the one
+    // posting call (two, when a match override releases a payment).
+
+    fn suppliers(&self, conn: &mut Connection) -> Result<Vec<(i64, String)>, AgentError> {
+        let rows = self.call(conn, "list_suppliers", &json!({}))?;
+        Ok(rows
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| (j_i64(s, "id"), j_str(s, "name").to_string()))
+            .collect())
+    }
+
+    /// Supplier resolution, the mirror of [`Agent::require_customer`]:
+    /// exact match, a clarification for a near-miss, a refusal with
+    /// the list for an unknown name. Never an auto-match.
+    fn require_supplier(
+        &self,
+        suppliers: &[(i64, String)],
+        given: Option<&str>,
+        prompt: &str,
+    ) -> Result<(i64, String), ProposeOutcome> {
+        let list = suppliers
+            .iter()
+            .map(|(_, n)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Some(given) = given.map(|g| g.trim()).filter(|g| !g.is_empty()) else {
+            return Err(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: format!("Which supplier? On file: {list}."),
+            });
+        };
+        if let Some((id, name)) = suppliers
+            .iter()
+            .find(|(_, n)| n.eq_ignore_ascii_case(given))
+        {
+            return Ok((*id, name.clone()));
+        }
+        let near = suppliers.iter().find(|(_, n)| {
+            let (g, s) = (given.to_lowercase(), n.to_lowercase());
+            g.contains(&s) || s.contains(&g)
+        });
+        if let Some((_, suggestion)) = near {
+            return Err(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: format!(
+                    "\"{given}\" isn't in the supplier list. Did you mean {suggestion}? \
+                     On file: {list}."
+                ),
+            });
+        }
+        Err(ProposeOutcome::Refusal {
+            prompt: prompt.to_string(),
+            message: format!(
+                "{given} isn't in the supplier list ({list}). Did you mean one of these, \
+                 or add a new supplier?"
+            ),
+        })
+    }
+
+    fn propose_receive_goods(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+    ) -> Result<ProposeOutcome, AgentError> {
+        // The doors seed the P2P chart extension (2050 GR-IR, 6040
+        // PPV) and demo suppliers on open; a library caller may not
+        // have. The call is idempotent — ensure it before resolving,
+        // exactly as open_door_db does.
+        erpcraft_core::seed_procurement_if_empty(conn)
+            .map_err(|e| AgentError::Dispatch(DispatchError::internal(e.to_string())))?;
+        let orders = self.call(conn, "list_procurement_orders", &json!({}))?;
+        let order_rows: Vec<Value> = orders.as_array().cloned().unwrap_or_default();
+
+        // Resolve the purchase order: an explicit id wins; then a
+        // named supplier's open orders; then the only open order.
+        let order = if let Some(id) = intent.order_id {
+            match order_rows.iter().find(|o| j_i64(o, "id") == id) {
+                Some(found) => (*found).clone(),
+                None => {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: format!(
+                            "There is no purchase order #{id}. {}",
+                            open_po_summary(&order_rows)
+                        ),
+                    })
+                }
+            }
+        } else {
+            let open: Vec<&Value> = order_rows
+                .iter()
+                .filter(|o| matches!(j_str(o, "status"), "open" | "partially_received"))
+                .collect();
+            let candidates: Vec<&Value> = match &intent.supplier {
+                Some(name) => {
+                    let suppliers = self.suppliers(conn)?;
+                    let (supplier_id, _) =
+                        match self.require_supplier(&suppliers, Some(name), prompt) {
+                            Ok(pair) => pair,
+                            Err(outcome) => return Ok(outcome),
+                        };
+                    open.iter()
+                        .filter(|o| j_i64(o, "supplier_id") == supplier_id)
+                        .cloned()
+                        .collect()
+                }
+                None => open,
+            };
+            match candidates.len() {
+                0 => {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: match &intent.supplier {
+                            Some(name) => format!(
+                                "There is no open purchase order for {name} to receive against."
+                            ),
+                            None => {
+                                "There are no open purchase orders to receive against.".to_string()
+                            }
+                        },
+                    })
+                }
+                1 => (*candidates[0]).clone(),
+                _ => {
+                    let list = candidates
+                        .iter()
+                        .map(|o| {
+                            format!(
+                                "#{} — {} ({}, {} received)",
+                                j_i64(o, "id"),
+                                j_str(o, "supplier_name"),
+                                fmt_cents(j_i64(o, "total_cents")),
+                                fmt_cents(j_i64(o, "received_cents"))
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return Ok(ProposeOutcome::Clarification {
+                        prompt: prompt.to_string(),
+                        question: format!(
+                            "Several purchase orders are open: {list}. Which one did the \
+                             delivery come in on?"
+                        ),
+                    });
+                }
+            }
+        };
+        let order_id = j_i64(&order, "id");
+        let supplier_name = j_str(&order, "supplier_name").to_string();
+        if !matches!(j_str(&order, "status"), "open" | "partially_received") {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "Purchase order #{order_id} ({supplier_name}) is '{}' — nothing more \
+                     can be received against it.",
+                    j_str(&order, "status")
+                ),
+            });
+        }
+
+        // Lines still owed, from the order itself.
+        let all_lines: Vec<Value> = order
+            .get("lines")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let open_lines: Vec<&Value> = all_lines
+            .iter()
+            .filter(|l| j_i64(l, "qty_received") < j_i64(l, "qty"))
+            .collect();
+        if open_lines.is_empty() {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "Purchase order #{order_id} ({supplier_name}) is fully received already."
+                ),
+            });
+        }
+
+        // Which lines, how much of each: an item named in the prompt
+        // picks its line; a bare quantity needs a single open line;
+        // neither means the delivery completes the order.
+        let items = self.items(conn)?;
+        let wanted_sku = intent.sku.as_deref().and_then(|given| {
+            let given = given.trim();
+            open_lines
+                .iter()
+                .find(|l| j_str(l, "sku").eq_ignore_ascii_case(given))
+                .map(|l| j_str(l, "sku").to_string())
+                .or_else(|| {
+                    items
+                        .iter()
+                        .find(|i| i.name.to_lowercase().contains(&given.to_lowercase()))
+                        .map(|i| i.sku.clone())
+                })
+        });
+        let targets: Vec<(&Value, i64)> = match (&wanted_sku, intent.qty) {
+            (Some(sku), qty) => {
+                let Some(line) = open_lines.iter().find(|l| j_str(l, "sku") == sku.as_str()) else {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: format!(
+                            "Purchase order #{order_id} has no unreceived line for {sku}."
+                        ),
+                    });
+                };
+                let remaining = j_i64(line, "qty") - j_i64(line, "qty_received");
+                vec![(*line, qty.unwrap_or(remaining))]
+            }
+            (None, Some(qty)) => {
+                if open_lines.len() > 1 {
+                    let list = open_lines
+                        .iter()
+                        .map(|l| {
+                            format!(
+                                "{} ({} still owed)",
+                                j_str(l, "sku"),
+                                j_i64(l, "qty") - j_i64(l, "qty_received")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Ok(ProposeOutcome::Clarification {
+                        prompt: prompt.to_string(),
+                        question: format!(
+                            "Purchase order #{order_id} has several lines still owed: \
+                             {list}. Which item did the {qty} arrive for?"
+                        ),
+                    });
+                }
+                vec![(open_lines[0], qty)]
+            }
+            (None, None) => open_lines
+                .iter()
+                .map(|l| (*l, j_i64(l, "qty") - j_i64(l, "qty_received")))
+                .collect(),
+        };
+        for (line, qty) in &targets {
+            let remaining = j_i64(line, "qty") - j_i64(line, "qty_received");
+            if *qty <= 0 || *qty > remaining {
+                return Ok(ProposeOutcome::Refusal {
+                    prompt: prompt.to_string(),
+                    message: format!(
+                        "Only {remaining} of {} remain unreceived on purchase order \
+                         #{order_id} ({} ordered, {} already in) — receiving {qty} is \
+                         refused; over-receipt is not allowed.",
+                        j_str(line, "sku"),
+                        j_i64(line, "qty"),
+                        j_i64(line, "qty_received")
+                    ),
+                });
+            }
+        }
+
+        // Render from the order + stock views: the inventory account
+        // follows each item's make-or-buy exactly as the core posts
+        // it (make → Finished Goods, buy → Raw Materials).
+        let stock = self.call(conn, "list_stock", &json!({}))?;
+        let stock_rows: Vec<Value> = stock.as_array().cloned().unwrap_or_default();
+        let mut by_account: Vec<(String, i64, Vec<String>)> = Vec::new();
+        let mut gate_lines: Vec<Value> = Vec::new();
+        let mut sublines: Vec<String> = Vec::new();
+        let mut total: i64 = 0;
+        for (line, qty) in &targets {
+            let amount = qty * j_i64(line, "unit_price_cents");
+            total += amount;
+            let make_or_buy = stock_rows
+                .iter()
+                .find(|s| j_i64(s, "item_id") == j_i64(line, "item_id"))
+                .map(|s| j_str(s, "make_or_buy").to_string())
+                .unwrap_or_else(|| "buy".to_string());
+            let account = if make_or_buy == "make" {
+                "1220"
+            } else {
+                "1200"
+            };
+            let bit = format!("{} ×{qty}", j_str(line, "sku"));
+            match by_account.iter_mut().find(|(code, _, _)| code == account) {
+                Some((_, sum, bits)) => {
+                    *sum += amount;
+                    bits.push(bit);
+                }
+                None => by_account.push((account.to_string(), amount, vec![bit])),
+            }
+            sublines.push(format!(
+                "{}: {qty} × {} = {} ({} of {} already in)",
+                j_str(line, "sku"),
+                fmt_cents(j_i64(line, "unit_price_cents")),
+                fmt_cents(amount),
+                j_i64(line, "qty_received"),
+                j_i64(line, "qty")
+            ));
+            gate_lines.push(json!({ "po_line_id": j_i64(line, "id"), "qty": qty }));
+        }
+        let mut confirm_lines: Vec<ConfirmLine> = by_account
+            .iter()
+            .map(|(code, amount, bits)| ConfirmLine {
+                code: code.clone(),
+                debit: *amount,
+                credit: 0,
+                note: Some(bits.join(", ")),
+            })
+            .collect();
+        confirm_lines.push(ConfirmLine {
+            code: "2050".to_string(),
+            debit: 0,
+            credit: total,
+            note: Some("received, not yet invoiced".to_string()),
+        });
+        let described = targets
+            .iter()
+            .map(|(l, q)| format!("{} ×{q}", j_str(l, "sku")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let confirmation = self.render(
+            conn,
+            &format!("Receive {described} against purchase order #{order_id} — {supplier_name}"),
+            &sublines,
+            &confirm_lines,
+        )?;
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: "receive_goods".to_string(),
+            summary: format!("Receive goods on purchase order #{order_id} ({supplier_name})"),
+            confirmation_text: confirmation,
+            duplicate_warning: None,
+            gate: GateCall::Dispatch {
+                command: "receive_goods".to_string(),
+                args: json!({ "order_id": order_id, "lines": gate_lines }),
+            },
+            draft_invoice_id: None,
+        })))
+    }
+
+    fn propose_pay_ap_invoice(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        options: &ProposeOptions,
+    ) -> Result<ProposeOutcome, AgentError> {
+        erpcraft_core::seed_procurement_if_empty(conn)
+            .map_err(|e| AgentError::Dispatch(DispatchError::internal(e.to_string())))?;
+        let rows = self.call(conn, "list_ap_invoices", &json!({}))?;
+        let ap_rows: Vec<Value> = rows.as_array().cloned().unwrap_or_default();
+
+        // Resolve the invoice: explicit id, else the named supplier's
+        // one open invoice, else the only open one.
+        let invoice = if let Some(id) = intent.ap_invoice_id {
+            match ap_rows.iter().find(|inv| j_i64(inv, "id") == id) {
+                Some(found) => (*found).clone(),
+                None => {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: format!("There is no AP invoice #{id}."),
+                    })
+                }
+            }
+        } else {
+            let open: Vec<&Value> = ap_rows
+                .iter()
+                .filter(|inv| {
+                    matches!(j_str(inv, "status"), "open" | "partially_paid" | "on_hold")
+                        && j_i64(inv, "balance_cents") > 0
+                })
+                .collect();
+            let candidates: Vec<&Value> = match &intent.supplier {
+                Some(name) => {
+                    let suppliers = self.suppliers(conn)?;
+                    let (supplier_id, _) =
+                        match self.require_supplier(&suppliers, Some(name), prompt) {
+                            Ok(pair) => pair,
+                            Err(outcome) => return Ok(outcome),
+                        };
+                    open.iter()
+                        .filter(|inv| j_i64(inv, "supplier_id") == supplier_id)
+                        .cloned()
+                        .collect()
+                }
+                None => open,
+            };
+            match candidates.len() {
+                0 => {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: match &intent.supplier {
+                            Some(name) => {
+                                format!("{name} has no open AP invoice to pay.")
+                            }
+                            None => "There are no open AP invoices to pay.".to_string(),
+                        },
+                    })
+                }
+                1 => (*candidates[0]).clone(),
+                _ => {
+                    let list = candidates
+                        .iter()
+                        .map(|inv| {
+                            format!(
+                                "#{} ({} due{})",
+                                j_i64(inv, "id"),
+                                fmt_cents(j_i64(inv, "balance_cents")),
+                                if j_str(inv, "status") == "on_hold" {
+                                    ", on match hold"
+                                } else {
+                                    ""
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Ok(ProposeOutcome::Clarification {
+                        prompt: prompt.to_string(),
+                        question: format!(
+                            "{} has {} open AP invoices: {list}. Which one is being paid?",
+                            j_str(candidates[0], "supplier_name"),
+                            candidates.len()
+                        ),
+                    });
+                }
+            }
+        };
+        let ap_id = j_i64(&invoice, "id");
+        let supplier_name = j_str(&invoice, "supplier_name").to_string();
+        let balance = j_i64(&invoice, "balance_cents");
+        if j_str(&invoice, "status") == "paid" || balance <= 0 {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!("AP invoice #{ap_id} ({supplier_name}) is already paid in full."),
+            });
+        }
+
+        let amount = match self.amount_slot(intent, prompt) {
+            Ok(amount) => amount,
+            Err(outcome) => return Ok(outcome),
+        };
+        let amount = amount.unwrap_or(balance);
+        if amount > balance {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "{} is more than the {} balance on AP invoice #{ap_id} — overpayment \
+                     is refused.",
+                    fmt_cents(amount),
+                    fmt_cents(balance)
+                ),
+            });
+        }
+
+        // Controls: above the approval threshold the posting needs a
+        // named actor and a different approver, which an agent
+        // proposal cannot carry — refuse up front rather than
+        // proposing something confirm would bounce.
+        let settings = self.call(conn, "list_control_settings", &json!({}))?;
+        let threshold = settings.as_array().and_then(|rows| {
+            rows.iter()
+                .find(|s| j_str(s, "key") == "payment_approval_threshold_cents")
+                .and_then(|s| j_str(s, "value").parse::<i64>().ok())
+        });
+        if let Some(threshold) = threshold {
+            if amount > threshold {
+                return Ok(ProposeOutcome::Refusal {
+                    prompt: prompt.to_string(),
+                    message: format!(
+                        "Paying {} is above the {} payment-approval threshold: the \
+                         pay_ap_invoice command must name an actor and a different \
+                         approver, which an agent proposal can't carry. Run it there \
+                         with --actor and --approver.",
+                        fmt_cents(amount),
+                        fmt_cents(threshold)
+                    ),
+                });
+            }
+        }
+
+        // The three-way-match hold: it surfaces before anything is
+        // proposed. No reason in the prompt → no proposal at all.
+        // Reason but no name → a clarification (the override records
+        // who). Reason + name → the proposal carries the override as
+        // its first gated step, hold and variances printed on it.
+        if j_str(&invoice, "status") == "on_hold" {
+            let variances: Vec<String> = invoice
+                .get("variances")
+                .and_then(|v| v.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|v| j_str(v, "message").to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let hold_line = if variances.is_empty() {
+                "a match variance".to_string()
+            } else {
+                variances.join("; ")
+            };
+            let reason = intent
+                .override_reason
+                .as_deref()
+                .map(|r| r.trim())
+                .filter(|r| !r.is_empty());
+            let overrider = intent
+                .overrider
+                .as_deref()
+                .map(|r| r.trim())
+                .filter(|r| !r.is_empty());
+            match (reason, overrider) {
+                (Some(reason), Some(by)) => {
+                    let payment_text = self.render(
+                        conn,
+                        &format!(
+                            "Step 2 — pay {supplier_name} {} against AP invoice #{ap_id}",
+                            fmt_cents(amount)
+                        ),
+                        &[format!("Balance after: {}", fmt_cents(balance - amount))],
+                        &[
+                            ConfirmLine {
+                                code: "2000".to_string(),
+                                debit: amount,
+                                credit: 0,
+                                note: None,
+                            },
+                            ConfirmLine {
+                                code: "1000".to_string(),
+                                debit: 0,
+                                credit: amount,
+                                note: None,
+                            },
+                        ],
+                    )?;
+                    let confirmation = format!(
+                        "Pay {supplier_name} {} against AP invoice #{ap_id} — \
+                         ON THREE-WAY-MATCH HOLD\n\
+                         ⚠ Match hold: {hold_line}\n\
+                         Step 1 — override the match: reason \"{reason}\" and overrider \
+                         {by} are recorded on the invoice; the variance facts stay \
+                         visible.\n{payment_text}",
+                        fmt_cents(amount)
+                    );
+                    return Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+                        prompt: prompt.to_string(),
+                        intent: "pay_ap_invoice".to_string(),
+                        summary: format!(
+                            "Pay AP invoice #{ap_id} ({supplier_name}) — match override by {by}"
+                        ),
+                        confirmation_text: confirmation,
+                        duplicate_warning: None,
+                        gate: GateCall::Sequence(vec![
+                            (
+                                "override_ap_match".to_string(),
+                                json!({
+                                    "ap_invoice_id": ap_id,
+                                    "reason": reason,
+                                    "by": by,
+                                }),
+                            ),
+                            (
+                                "pay_ap_invoice".to_string(),
+                                json!({ "ap_invoice_id": ap_id, "amount_cents": amount }),
+                            ),
+                        ]),
+                        draft_invoice_id: None,
+                    })));
+                }
+                (Some(_), None) => {
+                    return Ok(ProposeOutcome::Clarification {
+                        prompt: prompt.to_string(),
+                        question: format!(
+                            "AP invoice #{ap_id} is on three-way-match hold ({hold_line}). \
+                             Who is overriding the match? The override is recorded with \
+                             that person's name."
+                        ),
+                    });
+                }
+                _ => {
+                    return Ok(ProposeOutcome::Refusal {
+                        prompt: prompt.to_string(),
+                        message: format!(
+                            "AP invoice #{ap_id} ({supplier_name}) is on three-way-match \
+                             hold — {hold_line} — and can't be proposed for payment \
+                             while the hold stands. Resolve the variance, run \
+                             override_ap_match with a recorded reason, or restate the \
+                             payment with the reason and the approver's name in the \
+                             prompt (\"pay it anyway — <reason>, approved by <name>\")."
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Duplicate scan, mirroring the sales-side payment: the same
+        // amount already recorded against this invoice warns first.
+        let payments = self.call(conn, "list_ap_payments", &json!({ "ap_invoice_id": ap_id }))?;
+        let duplicate_warning = payments.as_array().and_then(|rows| {
+            rows.iter()
+                .find(|p| j_i64(p, "amount_cents") == amount)
+                .map(|_| {
+                    format!(
+                        "A payment of {} against AP invoice #{ap_id} is already recorded.",
+                        fmt_cents(amount)
+                    )
+                })
+        });
+        if let Some(warning) = &duplicate_warning {
+            if !options.allow_duplicate {
+                return Ok(ProposeOutcome::DuplicateWarning {
+                    prompt: prompt.to_string(),
+                    warning: format!(
+                        "{warning} I won't post it twice — say the word and I'll \
+                         prepare it anyway."
+                    ),
+                });
+            }
+        }
+
+        let mut sublines = vec![format!(
+            "Invoice total {} — {} already paid; balance after: {}",
+            fmt_cents(j_i64(&invoice, "total_cents")),
+            fmt_cents(j_i64(&invoice, "paid_cents")),
+            fmt_cents(balance - amount)
+        )];
+        if j_str(&invoice, "match_status") == "overridden" {
+            sublines.push(format!(
+                "Three-way match was overridden by {}: {}",
+                invoice
+                    .get("overridden_by")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
+                invoice
+                    .get("override_reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+            ));
+        }
+        let lines = vec![
+            ConfirmLine {
+                code: "2000".to_string(),
+                debit: amount,
+                credit: 0,
+                note: Some(format!("{supplier_name}'s balance drops")),
+            },
+            ConfirmLine {
+                code: "1000".to_string(),
+                debit: 0,
+                credit: amount,
+                note: None,
+            },
+        ];
+        let confirmation = self.render(
+            conn,
+            &format!(
+                "Pay {supplier_name} {} against AP invoice #{ap_id}",
+                fmt_cents(amount)
+            ),
+            &sublines,
+            &lines,
+        )?;
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: "pay_ap_invoice".to_string(),
+            summary: format!("Pay AP invoice #{ap_id} ({supplier_name})"),
+            confirmation_text: confirmation,
+            duplicate_warning,
+            gate: GateCall::Dispatch {
+                command: "pay_ap_invoice".to_string(),
+                args: json!({ "ap_invoice_id": ap_id, "amount_cents": amount }),
+            },
+            draft_invoice_id: None,
+        })))
+    }
+
     // -- Resolution + scans ------------------------------------------
 
     fn customers(&self, conn: &mut Connection) -> Result<Vec<(i64, String)>, AgentError> {
@@ -1594,6 +2360,21 @@ fn debit_normal(account_type: &str) -> bool {
     matches!(account_type, "asset" | "expense" | "contra_revenue")
 }
 
+/// One line naming the purchase orders still open for receiving
+/// (used in refusals so a wrong id comes back with the real list).
+fn open_po_summary(order_rows: &[Value]) -> String {
+    let open: Vec<String> = order_rows
+        .iter()
+        .filter(|o| matches!(j_str(o, "status"), "open" | "partially_received"))
+        .map(|o| format!("#{} ({})", j_i64(o, "id"), j_str(o, "supplier_name")))
+        .collect();
+    if open.is_empty() {
+        "No purchase orders are open for receiving.".to_string()
+    } else {
+        format!("Open for receiving: {}.", open.join(", "))
+    }
+}
+
 fn builder_summary(name: &str, intent: &Intent, customer: Option<&str>) -> String {
     match name {
         "buy_materials" => match &intent.supplier {
@@ -1684,6 +2465,22 @@ struct Intent {
     /// item (characteristic code → value).
     #[serde(default)]
     configuration: Option<Value>,
+    /// P2P receive: the purchase order's id, when the prompt names
+    /// one ("purchase order 3").
+    #[serde(default)]
+    order_id: Option<i64>,
+    /// P2P payment: the AP invoice's id, when the prompt names one
+    /// ("AP invoice 3").
+    #[serde(default)]
+    ap_invoice_id: Option<i64>,
+    /// P2P payment on a match hold: the justification for overriding
+    /// the three-way match, copied as stated.
+    #[serde(default)]
+    override_reason: Option<String>,
+    /// P2P payment on a match hold: who approved the override —
+    /// recorded on the invoice by `override_ap_match`.
+    #[serde(default)]
+    overrider: Option<String>,
 }
 
 /// Extract the intent object from the model's raw reply: the first

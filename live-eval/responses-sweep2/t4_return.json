@@ -1,0 +1,37 @@
+{
+ "id": "t4_return",
+ "prompt": "Delta returned 2 defective brackets.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-34dd1d04781d449d9f0ce86bf32b20e6",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: Delta returned 2 defective brackets.\n\nWe need to output JSON with intent record_return etc.\n\nWe have rules: intents list includes record_return. Need to figure fields.\n\nWe have customer Delta, qty 2, sku BRK-100? The item is BRK-100 Finished Bracket. So sku likely BRK-100. Need to check shape: fields include customer, supplier, qty, amount, price_each, day, topic, sku, need_date, key, configuration, order_id, ap_invoice_id, override_reason, overrider.\n\nFor record_return, likely need customer, qty, sku? Let's see examples not given. But we should include customer: \"Delta\", qty: 2, sku: \"BRK-100\" ?\n\nWe must copy customer names exactly as written. Delta is on file.\n\nWe should not invent amount? The prompt says returned 2 defective brackets. No amount stated. But we have open invoices: #1 Delta \u2014 total $1,250.00, balance $1,250.00. That is 10 brackets at $125 each? 1250/125 =10. So return 2 brackets would be $250. But rule says copy money exactly as written, never convert. So we should not include amount unless stated. However maybe record_return expects amount? But rule says omit fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields. So we should omit amount if not stated.\n\nBut maybe we need to infer sku? The prompt says \"2 defective brackets.\" Could be BRK-100. Items: BRK-100 Finished Bracket \u2014 price $125.00. So sku is BRK-100.\n\nWe should output intent record_return.\n\nCheck other fields: day? Today is 2026-10-30. But prompt doesn't say day. So omit.\n\nWe must ensure JSON shape exactly. Provide intent, customer, qty, sku.\n\nShould we include amount? No.\n\nLet's see typical ERP: record_return might need to reference invoice? But not given.\n\nWe should output: {\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}\n\nCheck if need to include topic? No.\n\nMake sure to follow rules: Copy customer names and money exactly as written. qty is unit count as integer when prompt states one. So qty 2.\n\nWe should not add extra fields.\n\nPotential nuance: The system has open invoices #1 Delta. Might need to link? But prompt doesn't state invoice number. So omit.\n\nThus final JSON: {\"intent\":\"record_return\",\"customer\":\"Delta\",\"qty\":2,\"sku\":\"BRK-100\"}\n\nCheck if sku should be \"BRK-100\" exactly. Yes.\n\nWe must return exactly this shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nWe should not include explanation.\n\nWe must ensure valid JSON.\n\nWe should consider if intent could be unclear? No, it's clearly record_return.\n\nWe should output that.\n\nPotential alternative: record_return might require amount? But we have no amount. Could we infer amount from price? Rule says price_each only when prompt states per-unit price. So not.\n\nThus final answer is JSON.\n\nWe must not add prose.\n\nWe should ensure we don't include amount.\n\nWe should output JSON object.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465011,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 990,
+   "completion_tokens": 717,
+   "total_tokens": 1707,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 519,
+    "audio_tokens": 0,
+    "reasoning_tokens": 686,
+    "rejected_prediction_tokens": 867
+   }
+  }
+ }
+}

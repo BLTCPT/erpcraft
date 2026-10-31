@@ -1,0 +1,37 @@
+{
+ "id": "oos_purchase_order",
+ "prompt": "Create a purchase order for more steel.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-c3c2184052be4dd4952a07c758f8827d",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Create a purchase order for more steel.\"\n\nWe need to return JSON with intent. The intents listed: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice. Anything else (payroll, tax, multi-currency) is out_of_scope.\n\nCreating a purchase order is out_of_scope per rules: Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope)\n\nSo intent out_of_scope, topic ... Need to provide topic.\n\nWe should return {\"intent\":\"out_of_scope\",\"topic\":\"...\"} Probably topic is \"create purchase order\" or \"buy_materials\"? But buy_materials is maybe different? Let's see definitions. The system says: Anything else (payroll, tax, multi-currency) is {\"intent\": \"out_of_scope\", \"topic\": \"...\"}. And receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope)\n\nSo we should return out_of_scope with topic maybe \"create purchase order\" or \"buy_materials\"? The prompt says Create a purchase order for more steel. So topic should be that.\n\nWe must emit JSON immediately, without deliberating over omitted fields. But we need to follow shape: {\"intent\": \"...\", \"customer\": \"...\", ...}. For out_of_scope, we need intent and topic.\n\nSo output: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nPossibly need to include more detail. Could be \"buy_materials\" but that's an intent, not topic. The instruction says creating a purchase order is out_of_scope, so we must not use buy_materials.\n\nThus final JSON: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nCheck other requirements: Copy customer names exactly, etc. Not relevant.\n\nWe must not add prose.\n\nWe should ensure valid JSON.\n\nPotential nuance: Should we include supplier? No.\n\nWe must return exactly this shape, omitting fields that do not apply \u2014 emit JSON immediately, without deliberating over omitted fields.\n\nSo final answer is JSON object.\n\nWe should not include reasoning.\n\nWe must ensure we don't add extra fields.\n\nThus final output: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nPossibly topic should be \"purchase order\" or \"buy_materials\". Let's see typical examples: For out_of_scope, topic is short description. Could be \"create purchase order for steel\". Safer to copy prompt's topic.\n\nWe could do \"create purchase order\" as topic.\n\nMake sure JSON is valid.\n\nWe should not include amount etc.\n\nThus final answer.\n\nWe must not add explanation.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465156,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1010,
+   "completion_tokens": 606,
+   "total_tokens": 1616,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 443,
+    "audio_tokens": 0,
+    "reasoning_tokens": 583,
+    "rejected_prediction_tokens": 698
+   }
+  }
+ }
+}

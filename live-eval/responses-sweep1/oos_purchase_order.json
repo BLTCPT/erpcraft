@@ -1,0 +1,37 @@
+{
+ "id": "oos_purchase_order",
+ "prompt": "Create a purchase order for more steel.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-f9a7f3ae26e14f11aae41f91fc5cf2ff",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Create a purchase order for more steel.\"\n\nWe need to return JSON with intent. The intents listed: invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice. Anything else (payroll, tax, multi-currency) is out_of_scope.\n\nCreating a purchase order is... The instructions say: Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope)\n\nSo creating purchase order is out_of_scope.\n\nWe need to return {\"intent\": \"out_of_scope\", \"topic\": \"...\"}.\n\nTopic should be something like \"create purchase order\" or \"buy_materials\"? But buy_materials maybe is creating purchase order? Let's see definitions. The intents include buy_materials. But the note says Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope). So maybe buy_materials is something else? Or maybe they mean that via this natural language agent, creating PO is out_of_scope. So we should mark out_of_scope.\n\nWe need to provide topic. Probably \"create purchase order\" or \"purchase order\".\n\nWe must return exactly JSON object and nothing else.\n\nWe should not include extra fields.\n\nSo output: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nCheck shape: For out_of_scope, need topic.\n\nWe must ensure we don't add prose.\n\nWe should follow rules: Return exactly this shape, omitting fields that do not apply.\n\nSo final answer is JSON.\n\nWe need to consider if buy_materials could be intent for \"Create a purchase order for more steel.\" But the explicit instruction says creating a purchase order is out_of_scope. So we must follow that.\n\nThe instruction: Receiving a delivery against a purchase order is receive_goods (creating a purchase order is out_of_scope): include ...\n\nSo they explicitly say creating a purchase order is out_of_scope.\n\nThus answer is out_of_scope.\n\nWe should ensure we don't hallucinate.\n\nReturn JSON.\n\nPotential nuance: topic should be copied? Probably \"create purchase order\" or \"purchase order\" or \"buy materials\". Let's use \"create purchase order\".\n\nWe must not include other fields.\n\nWe should output valid JSON.\n\nWe need to ensure we don't add explanation.\n\nThus final output: {\"intent\":\"out_of_scope\",\"topic\":\"create purchase order\"}\n\nCheck if need to include anything else? No.\n\nWe should ensure we follow system: You are parsing layer... Return exactly this shape...\n\nSo we do that.\n\nWe should not add amount etc.\n\nThus final answer is that JSON.\n\nWe should ensure we use double quotes.\n\nWe should not add trailing comma.\n\nWe should output single JSON object.\n\nWe should not add markdown.\n\nWe should just output JSON.\n\nWe should consider if the adapter validates everything... No need.\n\nWe should output.\n\nWe should ensure we don't misinterpret date.\n\nWe should output out_of_scope.\n\nWe should proceed."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464926,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 960,
+   "completion_tokens": 661,
+   "total_tokens": 1621,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 896
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 473,
+    "audio_tokens": 0,
+    "reasoning_tokens": 638,
+    "rejected_prediction_tokens": 843
+   }
+  }
+ }
+}

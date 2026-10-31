@@ -1,0 +1,37 @@
+{
+ "id": "mrp_config_refusal",
+ "prompt": "Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-4457b8e5e2d6408a8b9e6f80be555b85",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Can we build 200 BRK-100 in aluminum with galvanized finish by 2026-11-15?\"\n\nThis is a planning question mrp_check with sku, qty, need_date, configuration.\n\nWe need to map configuration: \"in aluminum with galvanized finish\" -> characteristic code: value.\n\nWe have items: BRK-100 Finished Bracket. Likely configuration characteristics: maybe material and finish? Need to infer codes. The example says: \"in steel with galvanized finish\" also carries \"configuration\": {characteristic code: value}. Need to determine characteristic code.\n\nWe don't have explicit characteristic codes given. But we need to guess. Possibly \"MATERIAL\" and \"FINISH\" or something. However we must output configuration with characteristic code: value.\n\nWe have no definition of characteristic codes. Could be generic? Maybe we need to infer from typical ERP: For BRK-100, maybe options: material = aluminum, finish = galvanized.\n\nWe need to provide configuration: { ... }. What codes to use? Could be \"material\": \"aluminum\", \"finish\": \"galvanized\" ? Or maybe codes like \"MAT\" etc.\n\nThe instruction: A configured what-if (\"in steel with galvanized finish\") also carries \"configuration\": {characteristic code: value}.\n\nWe need to choose characteristic code exactly as system expects. Without further info, we must make best guess. Possibly the system expects keys like \"ALU\" etc? But we have items: STL-BLANK Steel blank, ALU-BLANK Aluminum blank. So material aluminum corresponds to ALU-BLANK.\n\nFinish galvanized maybe code \"GALV\" ?\n\nWe need to look at typical ERPCraft? Might be that configuration is dict of characteristic code to value. Could be that characteristic codes are like \"MATERIAL\" and \"FINISH\".\n\nWe should output: \"configuration\": {\"material\": \"aluminum\", \"finish\": \"galvanized\"} or uppercase?\n\nWe need to decide. The prompt says \"in aluminum with galvanized finish\". So two characteristics.\n\nWe should output sku exactly: \"BRK-100\", qty 200, need_date 2026-11-15, intent mrp_check.\n\nWe must include configuration.\n\nWe need to ensure JSON shape exactly.\n\nReturn: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{...}}\n\nWhat to put for configuration? Let's search mental model: ERPCraft maybe uses characteristic codes like \"COLOR\", \"SIZE\" etc. For this case, maybe \"MATERIAL\" and \"FINISH\".\n\nWe could output: {\"MATERIAL\":\"ALUMINUM\",\"FINISH\":\"GALVANIZED\"} or lowercase values.\n\nBetter to copy values as written: \"aluminum\" and \"galvanized\". The instruction says copy exactly? For configuration, characteristic code: value. Probably value is as written.\n\nWe should output: \"configuration\": {\"material\": \"aluminum\", \"finish\": \"galvanized\"} . Could also be \"MATERIAL\": \"aluminum\".\n\nWe need to choose one that will pass validation. The adapter validates everything. It likely checks that configuration keys are valid characteristic codes for that SKU. If we guess wrong, it might fail.\n\nAlternative: maybe the system expects configuration with codes like \"ALU\" etc? But we have no info.\n\nWe could look at items: STL-BLANK, ALU-BLANK. So material characteristic maybe maps to blank SKU? But configuration likely is something like {\"BRK-100-MAT\": \"ALU\", \"BRK-100-FIN\": \"GALV\"}.\n\nWe need to make educated guess: Use generic keys: \"material\" and \"finish\".\n\nWe should also consider that the prompt says \"in aluminum with galvanized finish\". Could be two characteristics: material=aluminum, finish=galvanized.\n\nWe will output that.\n\nAlso need to ensure qty integer.\n\nSo final JSON: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}\n\nBut maybe characteristic codes are uppercase: \"MATERIAL\", \"FINISH\". Let's check typical ERP: characteristic codes often uppercase.\n\nWe could provide lowercase but validation might be case-sensitive.\n\nWe need to decide. The example in rules: \"in steel with galvanized finish\" also carries \"configuration\": {characteristic code: value}. They didn't give example values. So we must infer.\n\nWe could output both? No, must be one.\n\nWe could attempt to use codes like \"MATL\" etc. Hmm.\n\nWe have no additional data. Could we omit configuration? No, instruction says also carries configuration.\n\nWe must include it.\n\nWe should output configuration with keys exactly as words in prompt: \"aluminum\" is material, \"galvanized\" is finish. Use keys \"material\" and \"finish\" lower case, values lower case as in prompt.\n\nThat seems most natural.\n\nWe should also ensure we don't include extra fields like customer, supplier etc.\n\nReturn exactly JSON object.\n\nWe must not add prose.\n\nWe should output JSON with intent mrp_check.\n\nPotential nuance: need_date as YYYY-MM-DD resolve month names against today; here date already given as 2026-11-15, so copy.\n\nThus final answer: {\"intent\":\"mrp_check\",\"sku\":\"BRK-100\",\"qty\":200,\"need_date\":\"2026-11-15\",\"configuration\":{\"material\":\"aluminum\",\"finish\":\"galvanized\"}}\n\nIf validation expects uppercase values, might still pass? Could also be \"ALUMINUM\" etc. But we will go with lowercase as written.\n\nWe could also include \"ALU\" vs \"aluminum\". The prompt says \"in aluminum\". So value \"aluminum\" is faithful.\n\nWe should output that.\n\nWe must ensure JSON is valid.\n\nWe should not include amount, price_each etc.\n\nWe should ensure we follow shape: omit fields that do not apply.\n\nThus final JSON is as above.\n\nWe need to consider if configuration values should be codes like \"ALU-BLANK\"? But no.\n\nWe will output as described.\n\nWe should also consider that maybe the system expects configuration: {\"ALU\": \"something\"} Not.\n\nWe will proceed.\n\n"
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464948,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1059,
+   "completion_tokens": 1364,
+   "total_tokens": 2423,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 966,
+    "audio_tokens": 0,
+    "reasoning_tokens": 1313,
+    "rejected_prediction_tokens": 1820
+   }
+  }
+ }
+}

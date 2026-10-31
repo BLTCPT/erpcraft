@@ -1,0 +1,37 @@
+{
+ "id": "t2_payment",
+ "prompt": "Delta paid $3,125 against their invoice.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-c2312e94ff1b4c3d80dd74b5bcf45cab",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Delta paid $3,125 against their invoice.\"\n\nWe need to return JSON with intent record_payment? Let's see intents list:\n\n- invoice_shipment, record_payment, buy_materials, pay_supplier, issue_materials, record_labor, complete_production, record_deposit, record_return, record_rent, record_interest, record_depreciation, mrp_check, mrp_release, receive_goods, pay_ap_invoice.\n\nDelta paid $3,125 against their invoice. That's record_payment. Need to map fields.\n\nRules: Copy customer names and money exactly as written in prompt (\"$3,125\" stays \"$3,125\"). Never convert money to a number, never round it.\nqty is unit count as integer, when prompt states one.\nprice_each only when prompt states per-unit price.\nday is weekday name as written or \"today\".\n\nWe need to produce JSON: intent, customer, amount, etc.\n\nWe have customer Delta, amount $3,125. Should we include anything else? Possibly need to infer? The open invoices: #1 Delta \u2014 total $5,000.00, balance $5,000.00. But prompt says Delta paid $3,125 against their invoice. So intent record_payment, customer Delta, amount $3,125.\n\nCheck shape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should omit fields that do not apply. So include intent, customer, amount.\n\nShould we include anything else? Possibly need to ensure amount exactly as written: \"$3,125\" . The prompt says \"$3,125\". Keep that.\n\nNo day mentioned.\n\nThus output: {\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}\n\nCheck if any other nuance: The system says Today is 2026-10-30. Customers on file etc. But not needed.\n\nWe must return exactly one JSON object and nothing else \u2014 no prose, no journal lines.\n\nEnsure valid JSON.\n\nPotential edge: Should we include topic? No.\n\nMake sure to follow exactly shape. Omit fields that do not apply.\n\nThus final answer is JSON.\n\nWe must not add extra fields like order_id.\n\nReturn exactly that.\n\nCheck if amount should include dollar sign: yes, copy exactly as written \"$3,125\".\n\nThus final output: {\"intent\":\"record_payment\",\"customer\":\"Delta\",\"amount\":\"$3,125\"}\n\nEnsure no trailing comma.\n\nWe should ensure we don't hallucinate.\n\nWe are parsing layer."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464887,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 980,
+   "completion_tokens": 618,
+   "total_tokens": 1598,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 128
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 478,
+    "audio_tokens": 0,
+    "reasoning_tokens": 591,
+    "rejected_prediction_tokens": 502
+   }
+  }
+ }
+}

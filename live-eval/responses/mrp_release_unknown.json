@@ -1,0 +1,37 @@
+{
+ "id": "mrp_release_unknown",
+ "prompt": "Release purchase:FST-SET:2026-11-10:999 please.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-9b135a0ef0a9460cb7432ae870bfa2b9",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Release purchase:FST-SET:2026-11-10:999 please.\"\n\nWe need to return JSON with intent mrp_release, key = purchase:FST-SET:2026-11-10:999\n\nRules: Releasing a planned order is mrp_release: the prompt names the planned order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) \u2014 copy it into \"key\" exactly, and include sku/qty/need_date when the prompt restates the demand the plan was computed from.\n\nHere prompt just says Release purchase:FST-SET:2026-11-10:999 please. So we should emit {\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}\n\nShould we include other fields? No.\n\nWe must return exactly JSON object and nothing else.\n\nCheck shape: {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \"overrider\": \"...\"}\n\nWe should omit fields that do not apply. So just intent and key.\n\nMake sure to copy exactly.\n\nWe must not add prose.\n\nReturn JSON immediately.\n\nPotential nuance: The key includes purchase:FST-SET:2026-11-10:999 . That's the key.\n\nWe should ensure correct JSON formatting.\n\nNo deliberating over omitted fields.\n\nWe must not include extra fields.\n\nThus output: {\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}\n\nCheck if need to include sku/qty/need_date? The prompt does not restate demand. So omit.\n\nWe should ensure we follow system instructions: emit JSON immediately, without deliberating over omitted fields.\n\nWe must not add commentary.\n\nWe are parsing layer.\n\nWe should output exactly that JSON.\n\nPotential edge: Should we include configuration? No.\n\nMake sure to use double quotes.\n\nWe should not add trailing comma.\n\nWe should ensure valid JSON.\n\nWe must not add explanation.\n\nWe should comply.\n\nWe need to consider that the user says Today is 2026-10-31. That is context for date resolution, but not needed here.\n\nWe should output JSON.\n\nWe must not hallucinate.\n\nWe should ensure we don't add \"topic\" etc.\n\nWe should output minimal JSON.\n\nWe should ensure we don't add extra whitespace that breaks validation? Whitespace is okay but keep simple.\n\nWe should output exactly {\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}\n\nWe must not add any other text.\n\nWe should ensure we follow the instruction to return exactly this shape, omitting fields that do not apply \u2014 emit the JSON immediately, without deliberating over the omitted fields.\n\nWe should do that.\n\nWe should not add reasoning.\n\nWe should output JSON.\n\nWe should ensure we don't add markdown code block.\n\nJust raw JSON.\n\nWe should proceed."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793465183,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1102,
+   "completion_tokens": 706,
+   "total_tokens": 1808,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 534,
+    "audio_tokens": 0,
+    "reasoning_tokens": 672,
+    "rejected_prediction_tokens": 663
+   }
+  }
+ }
+}

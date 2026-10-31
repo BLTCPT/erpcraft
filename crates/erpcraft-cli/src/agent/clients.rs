@@ -50,15 +50,19 @@ operator prompt into ONE JSON object and nothing else — no prose, no journal \
 lines. The adapter validates everything and renders the confirmation from the \
 ledger, never from your text.
 
-Return exactly this shape, omitting fields that do not apply:
+Return exactly this shape, omitting fields that do not apply — emit the \
+JSON immediately, without deliberating over the omitted fields:
 {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \
 \"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \
-\"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}}
+\"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}, \
+\"order_id\": 0, \"ap_invoice_id\": 0, \"override_reason\": \"...\", \
+\"overrider\": \"...\"}
 
 Intents: invoice_shipment, record_payment, buy_materials, pay_supplier, \
 issue_materials, record_labor, complete_production, record_deposit, \
 record_return, record_rent, record_interest, record_depreciation, \
-mrp_check, mrp_release. Anything else (payroll, tax, multi-currency) is \
+mrp_check, mrp_release, receive_goods, pay_ap_invoice. Anything else \
+(payroll, tax, multi-currency) is \
 {\"intent\": \"out_of_scope\", \"topic\": \"...\"}. If you cannot tell, \
 {\"intent\": \"unclear\"}.
 
@@ -77,7 +81,24 @@ carries \"configuration\": {characteristic code: value}.
 - Releasing a planned order is mrp_release: the prompt names the planned \
 order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) — copy \
 it into \"key\" exactly, and include sku/qty/need_date when the prompt \
-restates the demand the plan was computed from."
+restates the demand the plan was computed from.
+- Receiving a delivery against a purchase order is receive_goods (creating \
+a purchase order is out_of_scope): include \"order_id\" when the prompt \
+names the order number, \"supplier\" (copied exactly) when it names the \
+supplier, \"sku\" when it names an item, and \"qty\" when it states how \
+many arrived. Omit what the prompt does not state — never invent an id.
+- Paying one specific supplier invoice is pay_ap_invoice — not \
+pay_supplier, which pays down supplier balances in general. Include \
+\"ap_invoice_id\" when the prompt names one (\"AP invoice 3\"), \
+\"supplier\" (copied exactly) when it names the supplier, and \"amount\" \
+only when the prompt states one (no amount means the full balance). If \
+the prompt insists on paying despite a three-way-match hold (\"pay it \
+anyway\"), also include \"override_reason\" — the justification exactly \
+as stated — and \"overrider\" — the person the prompt names as approving \
+it. Without both, a held invoice cannot be proposed for payment. Parse \
+a payment the same way whether or not the context shows the invoice \
+on a match hold — the adapter surfaces holds itself; a hold is never \
+a reason to answer \"unclear\"."
         .to_string();
 
     let customers = if request.customers.is_empty() {
@@ -121,8 +142,56 @@ restates the demand the plan was computed from."
             .collect::<Vec<_>>()
             .join("; ")
     };
+    let suppliers = if request.suppliers.is_empty() {
+        "none".to_string()
+    } else {
+        request.suppliers.join(", ")
+    };
+    let purchase_orders = if request.open_purchase_orders.is_empty() {
+        "none".to_string()
+    } else {
+        request
+            .open_purchase_orders
+            .iter()
+            .map(|po| {
+                format!(
+                    "#{} {} — total {}, {} received",
+                    po.id,
+                    po.supplier_name,
+                    super::fmt_cents(po.total_cents),
+                    super::fmt_cents(po.received_cents)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let ap_invoices = if request.open_ap_invoices.is_empty() {
+        "none".to_string()
+    } else {
+        request
+            .open_ap_invoices
+            .iter()
+            .map(|inv| {
+                format!(
+                    "#{} {} — total {}, balance {}{}",
+                    inv.id,
+                    inv.supplier_name,
+                    super::fmt_cents(inv.total_cents),
+                    super::fmt_cents(inv.balance_cents),
+                    if inv.status == "on_hold" {
+                        " (ON THREE-WAY-MATCH HOLD)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
     let user = format!(
-        "Today is {}.\nCustomers on file: {customers}\nItems: {items}\nOpen invoices: {invoices}\nPrompt: {}",
+        "Today is {}.\nCustomers on file: {customers}\nItems: {items}\nOpen invoices: {invoices}\n\
+         Suppliers on file: {suppliers}\nOpen purchase orders: {purchase_orders}\n\
+         Open AP invoices: {ap_invoices}\nPrompt: {}",
         request.today, request.prompt
     );
     (system, user)
@@ -142,12 +211,12 @@ pub struct StubClient;
 
 impl ModelClient for StubClient {
     fn parse_intent(&self, request: &ParseRequest) -> Result<String, AgentError> {
-        Ok(stub_parse(&request.prompt, &request.today).to_string())
+        Ok(stub_parse(&request.prompt, &request.today, &request.suppliers).to_string())
     }
 }
 
 /// The stub's parse of one prompt into the intent JSON shape.
-pub fn stub_parse(prompt: &str, today: &str) -> Value {
+pub fn stub_parse(prompt: &str, today: &str, suppliers: &[String]) -> Value {
     let lower = prompt.to_lowercase();
     let amount = first_money(prompt);
     let qty = stated_qty(prompt);
@@ -174,8 +243,40 @@ pub fn stub_parse(prompt: &str, today: &str) -> Value {
             "need_date": need_date,
         });
     }
-    if lower.contains("purchase order") {
+    if lower.contains("purchase order") && !lower.contains("receive") {
         return json!({ "intent": "out_of_scope", "topic": "purchase orders" });
+    }
+    // P2P intents: receiving a delivery, and paying one named
+    // supplier invoice (distinct from the pay_supplier builder,
+    // which pays down a balance in general and names no invoice).
+    if lower.contains("receive") {
+        let (sku, qty, _) = mrp_demand_fields(prompt, today);
+        return json!({
+            "intent": "receive_goods",
+            "order_id": stated_id_after(prompt, &["purchase order", "order", "po"]),
+            "supplier": stated_supplier_name(prompt, suppliers),
+            "sku": sku,
+            "qty": qty,
+        });
+    }
+    if lower.contains("pay")
+        && (lower.contains("ap invoice")
+            || (lower.contains("invoice") && stated_supplier_name(prompt, suppliers).is_string()))
+    {
+        let (override_reason, overrider) = if lower.contains("anyway") || lower.contains("override")
+        {
+            stated_override(prompt)
+        } else {
+            (Value::Null, Value::Null)
+        };
+        return json!({
+            "intent": "pay_ap_invoice",
+            "ap_invoice_id": stated_id_after(prompt, &["ap invoice", "invoice"]),
+            "supplier": stated_supplier_name(prompt, suppliers),
+            "amount": amount,
+            "override_reason": override_reason,
+            "overrider": overrider,
+        });
     }
     if lower.contains("returned") {
         return json!({
@@ -559,6 +660,95 @@ fn stated_supplier(prompt: &str) -> Value {
     }
 }
 
+/// A supplier from the parse context named in the prompt: the full
+/// name, or its distinctive first word ("SteelWorks" for SteelWorks
+/// Supply). The adapter re-resolves the name against the live list,
+/// so a near-miss still clarifies there rather than matching here.
+fn stated_supplier_name(prompt: &str, suppliers: &[String]) -> Value {
+    let lower = prompt.to_lowercase();
+    for name in suppliers {
+        if lower.contains(&name.to_lowercase()) {
+            return Value::String(name.clone());
+        }
+        let first = name.split_whitespace().next().unwrap_or("");
+        if first.len() >= 4 && lower.contains(&first.to_lowercase()) {
+            return Value::String(name.clone());
+        }
+    }
+    Value::Null
+}
+
+/// The id number stated right after one of the marker phrases
+/// ("purchase order 3", "AP invoice 1", "#2"): the first integer
+/// token following the marker word(s).
+fn stated_id_after(prompt: &str, markers: &[&str]) -> Value {
+    let words: Vec<String> = prompt
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '#')
+                .to_lowercase()
+        })
+        .collect();
+    for marker in markers {
+        let marker_words: Vec<&str> = marker.split_whitespace().collect();
+        for start in 0..words.len() {
+            let hits = marker_words
+                .iter()
+                .enumerate()
+                .all(|(off, mw)| words.get(start + off).map(|w| w.as_str()) == Some(mw));
+            if hits {
+                if let Some(next) = words.get(start + marker_words.len()) {
+                    let digits = next.trim_start_matches('#');
+                    if let Ok(n) = digits.parse::<i64>() {
+                        return json!(n);
+                    }
+                }
+            }
+        }
+    }
+    Value::Null
+}
+
+/// The override pair from an insistent payment prompt ("pay it
+/// anyway — the price increase was approved by Dana"): the
+/// justification as stated (the clause after "because" or "—",
+/// minus the approval tail) and the approver (the capitalized name
+/// after the last "by").
+fn stated_override(prompt: &str) -> (Value, Value) {
+    let lower = prompt.to_lowercase();
+    let mut overrider = Value::Null;
+    let words: Vec<&str> = prompt.split_whitespace().collect();
+    for (i, word) in words.iter().enumerate() {
+        let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
+        if clean.eq_ignore_ascii_case("by") {
+            if let Some(name) = words.get(i + 1) {
+                let name = name.trim_matches(|c: char| !c.is_alphanumeric());
+                if name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    overrider = Value::String(name.to_string());
+                }
+            }
+        }
+    }
+    let mut reason: Option<String> = None;
+    if let Some(at) = lower.find("because") {
+        reason = Some(prompt[at + "because".len()..].trim().to_string());
+    } else if let Some(at) = prompt.find('—') {
+        reason = Some(prompt[at + '—'.len_utf8()..].trim().to_string());
+    }
+    let reason = reason.map(|r| {
+        let r = r.trim_end_matches('.').trim();
+        // Drop the approval tail: "… was approved by Dana" keeps the
+        // justification, not the attribution (that rides separately).
+        for tail in [" was approved by ", ", approved by ", " approved by "] {
+            if let Some(at) = r.to_lowercase().find(tail) {
+                return r[..at].trim().trim_end_matches(',').trim().to_string();
+            }
+        }
+        r.to_string()
+    });
+    (reason.map_or(Value::Null, Value::String), overrider)
+}
+
 fn has_word(lower: &str, word: &str) -> bool {
     lower
         .split_whitespace()
@@ -704,7 +894,10 @@ impl OpenAiChatClient {
             api_key,
             // Generous: the model spends tokens on reasoning before
             // it answers (the Baseten grant note, verified Oct 26).
-            max_tokens: 4096,
+            // The Oct 31 live eval (LIVE_EVAL.md) measured it: 3 of
+            // 23 contract prompts exhausted a 4096 cap inside a
+            // reasoning loop and returned no content at all.
+            max_tokens: 8192,
         }
     }
 
@@ -820,6 +1013,9 @@ mod tests {
                 total_cents: 500_000,
                 balance_cents: 500_000,
             }],
+            suppliers: vec!["SteelWorks Supply".to_string()],
+            open_purchase_orders: vec![],
+            open_ap_invoices: vec![],
         }
     }
 
@@ -872,6 +1068,22 @@ mod tests {
 
         let po = intent("Create a purchase order for more steel.");
         assert_eq!(po["intent"], "out_of_scope");
+
+        let recv = intent("Receive 60 FST-SET against purchase order 1.");
+        assert_eq!(recv["intent"], "receive_goods");
+        assert_eq!(recv["order_id"], 1);
+        assert_eq!(recv["sku"], "FST-SET");
+        assert_eq!(recv["qty"], 60);
+
+        let ap = intent("Pay AP invoice 1.");
+        assert_eq!(ap["intent"], "pay_ap_invoice");
+        assert_eq!(ap["ap_invoice_id"], 1);
+        assert!(ap["amount"].is_null(), "no amount stated — full balance");
+
+        let held = intent("Pay AP invoice 1 anyway — the price increase was approved by Dana.");
+        assert_eq!(held["intent"], "pay_ap_invoice");
+        assert_eq!(held["override_reason"], "the price increase");
+        assert_eq!(held["overrider"], "Dana");
     }
 
     #[test]

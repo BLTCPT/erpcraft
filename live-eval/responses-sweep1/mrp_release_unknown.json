@@ -1,0 +1,37 @@
+{
+ "id": "mrp_release_unknown",
+ "prompt": "Release purchase:FST-SET:2026-11-10:999 please.",
+ "status": 200,
+ "body": {
+  "id": "chatcmpl-bfe36b8d10ff4025bf40e248acc2782b",
+  "choices": [
+   {
+    "index": 0,
+    "message": {
+     "content": "{\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}",
+     "role": "assistant",
+     "reasoning_content": "We need to parse prompt: \"Release purchase:FST-SET:2026-11-10:999 please.\"\n\nIntent mrp_release. Need to return JSON with intent mrp_release, key = \"purchase:FST-SET:2026-11-10:999\"\n\nRules: Releasing a planned order is mrp_release: the prompt names the planned order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) \u2014 copy it into \"key\" exactly, and include sku/qty/need_date when the prompt restates the demand the plan was computed from.\n\nHere prompt only gives key, no sku/qty/need_date restated. So just key.\n\nWe must return exactly shape, omitting fields that do not apply.\n\nSo {\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}\n\nCheck other fields: Should we include anything else? No.\n\nWe must ensure JSON object only.\n\nWe need to follow system: Return exactly this shape, omitting fields that do not apply.\n\nWe should not add extra prose.\n\nWe need to ensure correct intent.\n\nPotential nuance: The key format is purchase:FST-SET:2026-11-10:999 . That's valid.\n\nWe should output that.\n\nNo other fields.\n\nWe must not include customer etc.\n\nWe should ensure we don't hallucinate.\n\nWe need to output JSON.\n\nWe should ensure we follow all rules: Copy customer names and money exactly... Not relevant.\n\nWe should output {\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}\n\nMake sure JSON valid.\n\nWe should not include trailing comma.\n\nWe should ensure we use double quotes.\n\nWe should not add explanation.\n\nWe need to consider if any other interpretation: Could be out_of_scope? No, it's mrp_release.\n\nWe should output exactly that.\n\nWe must ensure we don't add sku/qty/need_date because not stated.\n\nWe should output minimal.\n\nWe should ensure we don't add amount etc.\n\nWe should output JSON object.\n\nWe need to ensure we follow the instruction: Return exactly this shape, omitting fields that do not apply.\n\nWe should output that.\n\nWe should not add extra fields like configuration.\n\nWe should output final answer.\n\nWe need to ensure we handle date: Today is 2026-10-31, but not needed.\n\nWe should output JSON.\n\nWe should ensure we don't add \"topic\".\n\nWe should output {\"intent\":\"mrp_release\",\"key\":\"purchase:FST-SET:2026-11-10:999\"}\n\nWe should ensure we don't add whitespace issues? Any whitespace is okay but must be valid JSON.\n\nWe should output exactly that.\n\nWe should not add code block.\n\nWe should output raw JSON.\n\nWe should ensure we don't add explanation.\n\nWe should proceed to final."
+    },
+    "finish_reason": "stop"
+   }
+  ],
+  "created": 1793464946,
+  "model": "meta-models/muse-spark-open-1026",
+  "object": "chat.completion",
+  "usage": {
+   "prompt_tokens": 1052,
+   "completion_tokens": 622,
+   "total_tokens": 1674,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cached_tokens": 1024
+   },
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 468,
+    "audio_tokens": 0,
+    "reasoning_tokens": 588,
+    "rejected_prediction_tokens": 610
+   }
+  }
+ }
+}
