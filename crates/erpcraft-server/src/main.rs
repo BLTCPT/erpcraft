@@ -11,7 +11,7 @@
 //! as 400 with the core's plain-language message.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -26,8 +26,8 @@ use erpcraft_core::{
     list_config_models, list_customers, list_entries, list_invoices, list_items, list_orders,
     list_payments, list_payments_for_invoice, list_quotes, open_db, order_count, payment_count,
     post_entry, quote_count, record_payment, record_sales_return, send_quote, trial_balance,
-    void_invoice, ConfigValue, Explanation, LedgerError, NewCharacteristic, NewComponent,
-    NewConfigModel, NewDependency, NewEntry, NewQuote, ReturnLine, DEMO_COMPANY,
+    void_invoice, AuditFilter, ConfigValue, Explanation, LedgerError, NewCharacteristic,
+    NewComponent, NewConfigModel, NewDependency, NewEntry, NewQuote, ReturnLine, DEMO_COMPANY,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -139,7 +139,7 @@ async fn root() -> Json<RootInfo> {
     Json(RootInfo {
         name: "ERPCraft",
         vision: "A free, open-source, clean-room ERP in Rust — AI-native from day one.",
-        status: "alpha: ledger core + order-to-cash with GL posting engine + variant configurator (typed dependencies, deterministic evaluation, roll-up pricing)",
+        status: "alpha: ledger core + order-to-cash with GL posting engine + variant configurator (typed dependencies, deterministic evaluation, roll-up pricing) + audit trail + dynamic MRP (Warp Speed pattern)",
         demo_company: DEMO_COMPANY,
     })
 }
@@ -196,6 +196,48 @@ async fn list_entries_handler(
     let conn = db.lock().expect("db lock");
     let entries = list_entries(&conn).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({ "journal_entries": entries })))
+}
+
+/// Day 6: the audit trail — every posted entry fully explained,
+/// with the same optional filters as the `audit_trail` dispatch
+/// command (source / document / from_date / to_date).
+#[derive(Deserialize, Default)]
+struct AuditQuery {
+    source: Option<String>,
+    document: Option<String>,
+    from_date: Option<String>,
+    to_date: Option<String>,
+}
+
+async fn audit_trail_handler(
+    State(db): State<SharedDb>,
+    Query(q): Query<AuditQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    let filter = AuditFilter {
+        source: q.source,
+        document: q.document,
+        from_date: q.from_date,
+        to_date: q.to_date,
+    };
+    match erpcraft_core::audit_trail(&conn, &filter) {
+        Ok(records) => Ok(Json(serde_json::json!({ "audit_trail": records }))),
+        Err(e) => Err(bad_request(e)),
+    }
+}
+
+/// Day 6: one entry's full provenance — its document chain and
+/// reversal links. 404 when the entry does not exist.
+async fn audit_entry_handler(
+    State(db): State<SharedDb>,
+    Path(entry_id): Path<i64>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorBody>)> {
+    let conn = db.lock().expect("db lock");
+    match erpcraft_core::audit_entry(&conn, entry_id) {
+        Ok(Some(record)) => Ok(Json(serde_json::to_value(record).expect("serializable"))),
+        Ok(None) => Err(not_found("journal entry", entry_id)),
+        Err(e) => Err(server_error(e)),
+    }
 }
 
 async fn post_entry_handler(
@@ -606,6 +648,7 @@ async fn main() {
         .unwrap_or(3000);
 
     let conn = open_db(&db_path).expect("open ledger database");
+    erpcraft_core::seed_mrp_demo_if_empty(&conn).expect("seed MRP demo scenario");
     let db: SharedDb = Arc::new(Mutex::new(conn));
 
     let app = Router::new()
@@ -616,6 +659,8 @@ async fn main() {
         .route("/trial-balance", get(trial_balance_handler))
         .route("/journal-entries", get(list_entries_handler))
         .route("/journal-entries", post(post_entry_handler))
+        .route("/journal-entries/{id}/audit", get(audit_entry_handler))
+        .route("/audit-trail", get(audit_trail_handler))
         .route("/customers", get(customers))
         .route("/items", get(items))
         .route("/quotes", get(list_quotes_handler))

@@ -1,0 +1,18 @@
+{
+ "about": "Stub-recorded fallback fixture (Day 5): the deterministic StubClient's parse of T1, kept as the offline fallback. The primary recorded fixture (recorded_t1.json) was re-recorded from the live Baseten model on 2026-10-31.",
+ "exchanges": [
+  {
+   "prompt": "Invoice Acme for the 40 units we shipped Tuesday.",
+   "response": {
+    "customer": "Acme",
+    "day": "Tuesday",
+    "intent": "invoice_shipment",
+    "price_each": null,
+    "qty": 40
+   }
+  }
+ ],
+ "intended_route": "baseten meta-models/muse-spark-open-1026",
+ "note": "Recorded from the deterministic StubClient on 2026-10-30: the live spot-check could not run from the build session (POST /chat/completions is denied by that session's egress policy; GET /models verified both live routes' keys the same day). The response below is byte-identical to the stub parse the acceptance suite verifies. To re-record from the live model: erpcraft agent --print-parse-request \"Invoice Acme for the 40 units we shipped Tuesday.\", send those messages to Baseten meta-models/muse-spark-open-1026 (or Meta muse-spark-1.3 once its credit lands), and replace the response value.",
+ "recorded_from": "stub"
+}

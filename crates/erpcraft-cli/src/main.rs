@@ -348,6 +348,10 @@ fn run_agent(tokens: &[String]) -> ExitCode {
             println!("{warning}");
             ExitCode::SUCCESS
         }
+        Ok(ProposeOutcome::Answer { message, .. }) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
         Err(e) => {
             eprintln!("{e}");
             ExitCode::from(2)

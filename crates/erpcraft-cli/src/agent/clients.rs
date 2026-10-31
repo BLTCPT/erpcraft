@@ -52,12 +52,13 @@ ledger, never from your text.
 
 Return exactly this shape, omitting fields that do not apply:
 {\"intent\": \"...\", \"customer\": \"...\", \"supplier\": \"...\", \"qty\": 0, \
-\"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\"}
+\"amount\": \"...\", \"price_each\": \"...\", \"day\": \"...\", \"topic\": \"...\", \
+\"sku\": \"...\", \"need_date\": \"...\", \"key\": \"...\", \"configuration\": {...}}
 
 Intents: invoice_shipment, record_payment, buy_materials, pay_supplier, \
 issue_materials, record_labor, complete_production, record_deposit, \
-record_return, record_rent, record_interest, record_depreciation. Anything \
-else (purchase orders, payroll, tax, multi-currency) is \
+record_return, record_rent, record_interest, record_depreciation, \
+mrp_check, mrp_release. Anything else (payroll, tax, multi-currency) is \
 {\"intent\": \"out_of_scope\", \"topic\": \"...\"}. If you cannot tell, \
 {\"intent\": \"unclear\"}.
 
@@ -66,7 +67,17 @@ Rules:
 stays \"$3,125\"). Never convert money to a number, never round it.
 - qty is the unit count as an integer, when the prompt states one.
 - price_each only when the prompt states a per-unit price (\"at $130 each\").
-- day is the weekday name as written (\"Tuesday\") or \"today\"."
+- day is the weekday name as written (\"Tuesday\") or \"today\".
+- Planning questions are mrp_check: \"What are we short on?\" is a plain \
+{\"intent\": \"mrp_check\"}; \"Can we build 200 BRK-100 by Nov 15?\" adds \
+\"sku\" (copied exactly), \"qty\", and \"need_date\" as YYYY-MM-DD (resolve \
+month names against today; a named date already past this year means next \
+year). A configured what-if (\"in steel with galvanized finish\") also \
+carries \"configuration\": {characteristic code: value}.
+- Releasing a planned order is mrp_release: the prompt names the planned \
+order's key verbatim (it looks like purchase:FST-SET:2026-11-10:60) — copy \
+it into \"key\" exactly, and include sku/qty/need_date when the prompt \
+restates the demand the plan was computed from."
         .to_string();
 
     let customers = if request.customers.is_empty() {
@@ -131,17 +142,38 @@ pub struct StubClient;
 
 impl ModelClient for StubClient {
     fn parse_intent(&self, request: &ParseRequest) -> Result<String, AgentError> {
-        Ok(stub_parse(&request.prompt).to_string())
+        Ok(stub_parse(&request.prompt, &request.today).to_string())
     }
 }
 
 /// The stub's parse of one prompt into the intent JSON shape.
-pub fn stub_parse(prompt: &str) -> Value {
+pub fn stub_parse(prompt: &str, today: &str) -> Value {
     let lower = prompt.to_lowercase();
     let amount = first_money(prompt);
     let qty = stated_qty(prompt);
     let day = stated_day(prompt);
 
+    // MRP intents (MRP_DESIGN.md): a release names its key verbatim;
+    // planning questions are read-only checks.
+    if let Some(key) = stated_key(prompt) {
+        let (sku, qty, need_date) = mrp_demand_fields(prompt, today);
+        return json!({
+            "intent": "mrp_release",
+            "key": key,
+            "sku": sku,
+            "qty": qty,
+            "need_date": need_date,
+        });
+    }
+    if lower.contains("short") || lower.contains("can we build") || lower.contains("can we make") {
+        let (sku, qty, need_date) = mrp_demand_fields(prompt, today);
+        return json!({
+            "intent": "mrp_check",
+            "sku": sku,
+            "qty": qty,
+            "need_date": need_date,
+        });
+    }
     if lower.contains("purchase order") {
         return json!({ "intent": "out_of_scope", "topic": "purchase orders" });
     }
@@ -212,6 +244,133 @@ pub fn stub_parse(prompt: &str) -> Value {
         });
     }
     json!({ "intent": "unclear" })
+}
+
+/// A planned-order key named in the prompt, verbatim
+/// (`production:BRK-100:2026-11-15:150`).
+fn stated_key(prompt: &str) -> Option<String> {
+    prompt
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric() && c != ':' && c != '-')
+                .to_string()
+        })
+        .find(|t| {
+            (t.starts_with("production:") || t.starts_with("purchase:"))
+                && t.matches(':').count() == 3
+        })
+}
+
+/// SKU-shaped token: starts with a letter, contains a dash and a
+/// digit, and is not a date (`BRK-100`, `FST-SET` — but the fastener
+/// set has no digit; two out of three signals suffice when the token
+/// is all-caps with a dash).
+fn is_sku_token(t: &str) -> bool {
+    if t.contains(':') {
+        return false; // a planned-order key, not a SKU
+    }
+    if t.len() < 4 || !t.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    if t.chars().take(4).all(|c| c.is_ascii_digit()) {
+        return false; // a date or a year
+    }
+    t.contains('-')
+        && (t.chars().any(|c| c.is_ascii_digit()) || t.chars().all(|c| !c.is_ascii_lowercase()))
+}
+
+fn is_iso_date(t: &str) -> bool {
+    let parts: Vec<&str> = t.split('-').collect();
+    parts.len() == 3
+        && parts[0].len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// "by Nov 15" → the next such date on or after today, YYYY-MM-DD.
+fn month_day_date(prompt: &str, today: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    let words: Vec<String> = prompt
+        .to_lowercase()
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .collect();
+    let today_parts: Vec<i64> = today.split('-').filter_map(|p| p.parse().ok()).collect();
+    if today_parts.len() != 3 {
+        return None;
+    }
+    let (ty, tm, td) = (today_parts[0], today_parts[1], today_parts[2]);
+    for (i, w) in words.iter().enumerate() {
+        if w.len() < 3 {
+            continue;
+        }
+        let Some(month) = MONTHS.iter().position(|m| m.starts_with(w.as_str())) else {
+            continue;
+        };
+        let month = month as i64 + 1;
+        if let Some(day) = words.get(i + 1).and_then(|d| d.parse::<i64>().ok()) {
+            let year = if (month, day) < (tm, td) { ty + 1 } else { ty };
+            return Some(format!("{year:04}-{month:02}-{day:02}"));
+        }
+    }
+    None
+}
+
+/// The (sku, qty, need_date) a planning prompt states, as JSON
+/// values (null when unstated — the adapter clarifies, never
+/// invents). The quantity is the integer next to the SKU, else the
+/// first bare integer that is not part of a date.
+fn mrp_demand_fields(prompt: &str, today: &str) -> (Value, Value, Value) {
+    let tokens: Vec<String> = prompt
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != ':')
+                .to_string()
+        })
+        .collect();
+    let sku_idx = tokens.iter().position(|t| is_sku_token(t));
+    let sku = sku_idx.map(|i| tokens[i].clone());
+    let mut qty: Option<i64> = None;
+    if let Some(i) = sku_idx {
+        for cand in [i.wrapping_sub(1), i + 1] {
+            if let Some(tok) = tokens.get(cand) {
+                if let Ok(n) = tok.replace(',', "").parse::<i64>() {
+                    qty = Some(n);
+                    break;
+                }
+            }
+        }
+    }
+    if qty.is_none() {
+        qty = tokens
+            .iter()
+            .filter(|t| !is_iso_date(t))
+            .find_map(|t| t.replace(',', "").parse::<i64>().ok());
+    }
+    let need_date = tokens
+        .iter()
+        .find(|t| is_iso_date(t))
+        .cloned()
+        .or_else(|| month_day_date(prompt, today));
+    (
+        sku.map_or(Value::Null, |s| json!(s)),
+        qty.map_or(Value::Null, |q| json!(q)),
+        need_date.map_or(Value::Null, |d| json!(d)),
+    )
 }
 
 /// The first `$…` amount in the prompt, verbatim (the adapter parses

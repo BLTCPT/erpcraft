@@ -21,14 +21,17 @@
 
 use erpcraft_core::rusqlite::{ffi::ErrorCode, Connection, Error as SqliteError};
 use erpcraft_core::{
-    accept_quote, account_count, account_ledger, cancel_order, config_model_count,
-    create_invoice_from_order, create_order_from_quote, create_quote, customer_count,
-    decline_quote, entry_count, evaluate_configuration, expire_quote, fulfil_order,
-    get_config_model, get_entry, get_invoice, get_order, get_quote, invoice_count, issue_invoice,
-    list_config_models, list_customers, list_entries, list_invoices, list_items, list_orders,
-    list_payments, list_payments_for_invoice, list_quotes, open_db, order_count, payment_count,
-    post_entry, quote_count, record_payment, record_sales_return, send_quote, trial_balance,
-    ConfigValue, Evaluation, Explanation, LedgerError, NewEntry, NewQuote, ReturnLine,
+    accept_quote, account_count, account_ledger, add_bom_line, audit_entry, audit_trail,
+    cancel_order, complete_production_order, config_model_count, create_invoice_from_order,
+    create_order_from_quote, create_quote, customer_count, decline_quote, entry_count,
+    evaluate_configuration, expire_quote, fulfil_order, get_config_model, get_entry, get_invoice,
+    get_order, get_quote, invoice_count, issue_invoice, list_bom, list_config_models,
+    list_customers, list_entries, list_invoices, list_items, list_orders, list_payments,
+    list_payments_for_invoice, list_production_orders, list_purchase_orders, list_quotes,
+    list_stock, open_db, order_count, payment_count, post_entry, quote_count,
+    receive_purchase_order, record_payment, record_sales_return, release_planned_order, run_mrp,
+    send_quote, set_stock, trial_balance, AuditFilter, ConfigValue, Evaluation, Explanation,
+    LedgerError, MrpDemand, NewEntry, NewQuote, ReturnLine,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -175,6 +178,76 @@ fn id_prop(description: &str) -> Value {
     json!({ "type": "integer", "description": description })
 }
 
+/// The shared planning-run arguments: an as-of date plus optional
+/// what-if demand (one line). Used by every MRP read/release command
+/// so a plan is always recomputed from identical inputs.
+fn mrp_args_schema(extra: &[(&str, Value)], required: &[&str]) -> Value {
+    let mut props = json!({
+        "as_of": { "type": "string", "description": "Plan as of this date, YYYY-MM-DD (default: today)" },
+        "demand_sku": { "type": "string", "description": "What-if demand: item SKU" },
+        "demand_qty": { "type": "integer", "minimum": 1, "description": "What-if demand: quantity" },
+        "demand_date": { "type": "string", "description": "What-if demand: needed-by date, YYYY-MM-DD" },
+        "demand_config": {
+            "type": "object",
+            "description": "What-if demand: configuration values (characteristic code → value) for a configured item",
+            "additionalProperties": true
+        }
+    });
+    for (name, prop) in extra {
+        props[name] = prop.clone();
+    }
+    schema(props, required)
+}
+
+fn req_str(args: &Value, key: &str) -> Result<String, DispatchError> {
+    opt_str(args, key)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            DispatchError::refused(format!("argument '{key}' is required and must be a string"))
+        })
+}
+
+fn opt_i64(args: &Value, key: &str) -> Option<i64> {
+    args.get(key).and_then(|v| v.as_i64())
+}
+
+fn mrp_demand_from_args(args: &Value) -> Result<Vec<MrpDemand>, DispatchError> {
+    let mut demand = Vec::new();
+    if let Some(sku) = opt_str(args, "demand_sku") {
+        let qty = req_i64(args, "demand_qty").map_err(|_| {
+            DispatchError::refused(
+                "what-if demand needs demand_qty and demand_date alongside demand_sku".to_string(),
+            )
+        })?;
+        let date = req_str(args, "demand_date").map_err(|_| {
+            DispatchError::refused(
+                "what-if demand needs demand_qty and demand_date alongside demand_sku".to_string(),
+            )
+        })?;
+        let configuration = match args.get("demand_config") {
+            Some(v) if !v.is_null() => Some(
+                serde_json::from_value(v.clone())
+                    .map_err(|e| DispatchError::refused(format!("invalid demand_config: {e}")))?,
+            ),
+            _ => None,
+        };
+        demand.push(MrpDemand {
+            sku: sku.to_string(),
+            qty,
+            need_date: date,
+            configuration,
+        });
+    }
+    Ok(demand)
+}
+
+fn mrp_as_of(args: &Value) -> String {
+    opt_str(args, "as_of")
+        .map(|s| s.to_string())
+        .unwrap_or_else(today_utc)
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     let no_args = schema(json!({}), &[]);
     vec![
@@ -216,6 +289,134 @@ pub fn specs() -> Vec<CommandSpec> {
             usage: "erpcraft list_entries",
             primary_arg: None,
             input_schema: no_args.clone(),
+        },
+        CommandSpec {
+            name: "audit_entry",
+            summary: "One journal entry fully explained (Day 6 audit trail): who posted it, the document it belongs to, why it posted, the verbatim prompt for agent entries, and the full provenance chain (quote → order → invoice → payments → returns) with reversal links both ways.",
+            usage: "erpcraft audit_entry <entry_id>",
+            primary_arg: Some("entry_id"),
+            input_schema: schema(json!({ "entry_id": id_prop("Journal entry id") }), &["entry_id"]),
+        },
+        CommandSpec {
+            name: "audit_trail",
+            summary: "The audit trail (Day 6): every posted entry fully explained, oldest first. Optional filters: source (exact tag, e.g. agent / cli / invoice:3), document (e.g. invoice:3, payment:2, sales_return:3), from_date / to_date (inclusive, YYYY-MM-DD).",
+            usage: "erpcraft audit_trail [--source agent] [--document invoice:3] [--from-date 2026-10-01] [--to-date 2026-10-31]",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "source": { "type": "string", "description": "Exact source tag filter" },
+                    "document": { "type": "string", "description": "Document filter, e.g. invoice:3" },
+                    "from_date": { "type": "string", "description": "Earliest entry date (inclusive)" },
+                    "to_date": { "type": "string", "description": "Latest entry date (inclusive)" }
+                }),
+                &[],
+            ),
+        },
+        // ---- MRP (MRP_DESIGN.md): dynamic, explainable planning ---------
+        CommandSpec {
+            name: "run_mrp",
+            summary: "Run MRP (dynamic — computed from current state at call time, never a stored batch): nets open sales orders plus optional what-if demand (demand_sku/demand_qty/demand_date/demand_config) against on-hand + on-order + WIP, explodes through BOMs and configurator component structure, and returns per-item netting with reasons, planned production/purchase orders, and the shortage list (planned orders whose start date is already past).",
+            usage: "erpcraft run_mrp [--as-of 2026-10-31] [--demand-sku BRK-100 --demand-qty 200 --demand-date 2026-11-15]",
+            primary_arg: None,
+            input_schema: mrp_args_schema(&[], &[]),
+        },
+        CommandSpec {
+            name: "list_planned_orders",
+            summary: "The planned orders + shortages from a fresh MRP run (same optional as-of / what-if demand arguments as run_mrp). Each planned order has a key (kind:sku:due_date:qty) that release_planned_order accepts.",
+            usage: "erpcraft list_planned_orders [--as-of 2026-10-31] [--demand-sku BRK-100 --demand-qty 200 --demand-date 2026-11-15]",
+            primary_arg: None,
+            input_schema: mrp_args_schema(&[], &[]),
+        },
+        CommandSpec {
+            name: "explain_shortage",
+            summary: "Explain one item's shortage position in a fresh MRP run: whether it is short, by how much, when the planned order should have started, and the demand reasons + netting math behind it.",
+            usage: "erpcraft explain_shortage --sku BRK-100 [--as-of 2026-10-31]",
+            primary_arg: Some("sku"),
+            input_schema: mrp_args_schema(
+                &[("sku", json!({ "type": "string", "description": "Item SKU to explain" }))],
+                &["sku"],
+            ),
+        },
+        CommandSpec {
+            name: "release_planned_order",
+            summary: "Release one planned order from a fresh MRP run (pass the same as-of / what-if demand arguments that produced its key): creates the production order (make items) or purchase order (buy items) and counts it as WIP / on-order supply. Posts NO journal entry — value moves only through the existing builders when real events happen.",
+            usage: "erpcraft release_planned_order --key purchase:FST-SET:2026-11-10:60 [--as-of 2026-10-31] [--demand-sku BRK-100 --demand-qty 200 --demand-date 2026-11-15]",
+            primary_arg: Some("key"),
+            input_schema: mrp_args_schema(
+                &[("key", json!({ "type": "string", "description": "Planned-order key from list_planned_orders / run_mrp" }))],
+                &["key"],
+            ),
+        },
+        CommandSpec {
+            name: "list_stock",
+            summary: "Quantity state for MRP: every item with its make-or-buy flag, lead time, on-hand, on-order, and WIP quantities.",
+            usage: "erpcraft list_stock",
+            primary_arg: None,
+            input_schema: no_args.clone(),
+        },
+        CommandSpec {
+            name: "set_stock",
+            summary: "Record the physical quantity truth for one item (on_hand / on_order / wip). Quantities only — inventory value lives in the GL and moves through the posting builders.",
+            usage: "erpcraft set_stock <item_id> --on-hand 120 [--on-order 50] [--wip 0]",
+            primary_arg: Some("item_id"),
+            input_schema: schema(
+                json!({
+                    "item_id": id_prop("Item id"),
+                    "on_hand": { "type": "integer", "minimum": 0, "description": "Units on hand" },
+                    "on_order": { "type": "integer", "minimum": 0, "description": "Units on open purchase orders" },
+                    "wip": { "type": "integer", "minimum": 0, "description": "Units in work in progress" }
+                }),
+                &["item_id", "on_hand"],
+            ),
+        },
+        CommandSpec {
+            name: "list_bom",
+            summary: "The stocked bill of materials for one parent item.",
+            usage: "erpcraft list_bom <parent_item_id>",
+            primary_arg: Some("parent_item_id"),
+            input_schema: schema(json!({ "parent_item_id": id_prop("Parent item id") }), &["parent_item_id"]),
+        },
+        CommandSpec {
+            name: "add_bom_line",
+            summary: "Add a component to an item's stocked bill of materials (qty per parent unit).",
+            usage: "erpcraft add_bom_line --parent-item-id 1 --component-item-id 2 --qty-per 1",
+            primary_arg: None,
+            input_schema: schema(
+                json!({
+                    "parent_item_id": id_prop("Parent item id"),
+                    "component_item_id": id_prop("Component item id"),
+                    "qty_per": { "type": "integer", "minimum": 1, "description": "Component units per parent unit" }
+                }),
+                &["parent_item_id", "component_item_id", "qty_per"],
+            ),
+        },
+        CommandSpec {
+            name: "list_production_orders",
+            summary: "Released production orders (documents created by release_planned_order), oldest first.",
+            usage: "erpcraft list_production_orders",
+            primary_arg: None,
+            input_schema: no_args.clone(),
+        },
+        CommandSpec {
+            name: "list_purchase_orders",
+            summary: "Released purchase orders (documents created by release_planned_order), oldest first.",
+            usage: "erpcraft list_purchase_orders",
+            primary_arg: None,
+            input_schema: no_args.clone(),
+        },
+        CommandSpec {
+            name: "receive_purchase_order",
+            summary: "Record a purchase order's arrival: its quantity moves from on-order to on-hand. (Quantity event only — the GL side is pay_supplier when the bill is paid.)",
+            usage: "erpcraft receive_purchase_order <purchase_order_id>",
+            primary_arg: Some("purchase_order_id"),
+            input_schema: schema(json!({ "purchase_order_id": id_prop("Purchase order id") }), &["purchase_order_id"]),
+        },
+        CommandSpec {
+            name: "complete_production_order",
+            summary: "Record a production order's completion: its quantity moves from WIP to on-hand finished stock. (Quantity event only — the GL side is the complete_production builder.)",
+            usage: "erpcraft complete_production_order <production_order_id>",
+            primary_arg: Some("production_order_id"),
+            input_schema: schema(json!({ "production_order_id": id_prop("Production order id") }), &["production_order_id"]),
         },
         CommandSpec {
             name: "list_customers",
@@ -733,9 +934,14 @@ fn civil_from_days(z: i64) -> String {
 /// the schema + all three seed steps.
 pub fn open_door_db() -> Result<Connection, DispatchError> {
     let db_path = std::env::var("ERPCRAFT_DB").unwrap_or_else(|_| "erpcraft.db".to_string());
-    open_db(&db_path).map_err(|e| {
+    let conn = open_db(&db_path).map_err(|e| {
         DispatchError::internal(format!("cannot open the ledger database at {db_path}: {e}"))
-    })
+    })?;
+    // MRP demo scenario data (BOM, stock, lead times) is seeded at
+    // the doors, not in open_db — see MRP_DESIGN.md.
+    erpcraft_core::seed_mrp_demo_if_empty(&conn)
+        .map_err(|e| DispatchError::internal(format!("cannot seed the MRP demo scenario: {e}")))?;
+    Ok(conn)
 }
 
 /// Run one command by name against an open database. This is the
@@ -756,6 +962,132 @@ pub fn dispatch(conn: &mut Connection, door: Door, name: &str, args: &Value) -> 
             }
         }
         "list_entries" => to_json(list_entries(conn)?),
+        "audit_entry" => {
+            let id = req_i64(args, "entry_id")?;
+            match audit_entry(conn, id)? {
+                Some(record) => to_json(record),
+                None => Err(DispatchError::refused(format!(
+                    "no journal entry with id {id}"
+                ))),
+            }
+        }
+        "audit_trail" => {
+            let filter = AuditFilter {
+                source: opt_str(args, "source").map(|s| s.to_string()),
+                document: opt_str(args, "document").map(|s| s.to_string()),
+                from_date: opt_str(args, "from_date").map(|s| s.to_string()),
+                to_date: opt_str(args, "to_date").map(|s| s.to_string()),
+            };
+            to_json(audit_trail(conn, &filter)?)
+        }
+        "run_mrp" => {
+            let as_of = mrp_as_of(args);
+            let demand = mrp_demand_from_args(args)?;
+            to_json(run_mrp(conn, &as_of, &demand)?)
+        }
+        "list_planned_orders" => {
+            let as_of = mrp_as_of(args);
+            let demand = mrp_demand_from_args(args)?;
+            let plan = run_mrp(conn, &as_of, &demand)?;
+            Ok(json!({
+                "as_of": plan.as_of,
+                "planned_orders": plan.planned_orders,
+                "shortages": plan.shortages,
+            }))
+        }
+        "explain_shortage" => {
+            let sku = req_str(args, "sku")?.to_string();
+            if !list_stock(conn)?.iter().any(|s| s.sku == sku) {
+                return Err(DispatchError::refused(format!("no item with SKU {sku}")));
+            }
+            let as_of = mrp_as_of(args);
+            let demand = mrp_demand_from_args(args)?;
+            let plan = run_mrp(conn, &as_of, &demand)?;
+            let planned = plan.planned_orders.iter().find(|o| o.sku == sku).cloned();
+            let netting = plan.requirements.iter().find(|r| r.sku == sku);
+            let (shortage, explanation) = match (&planned, netting) {
+                (Some(o), _) if o.days_late > 0 => (
+                    true,
+                    format!(
+                        "{} is short {} units: demand is {} by {}, available supply is {} \
+                         (on hand {} + on order {} + WIP {}), so a {} order for {} must \
+                         start {} — {} day(s) before this plan's as-of date {}.",
+                        sku,
+                        o.qty,
+                        o.gross_required,
+                        o.due_date,
+                        o.on_hand + o.on_order + o.wip,
+                        o.on_hand,
+                        o.on_order,
+                        o.wip,
+                        o.kind,
+                        o.qty,
+                        o.start_date,
+                        o.days_late,
+                        plan.as_of
+                    ),
+                ),
+                (Some(o), _) => (
+                    false,
+                    format!(
+                        "{} has a planned {} order for {} due {} starting {} — it starts \
+                         on or after the as-of date {}, so it is planned, not short.",
+                        sku, o.kind, o.qty, o.due_date, o.start_date, plan.as_of
+                    ),
+                ),
+                (None, Some(n)) => (
+                    false,
+                    format!(
+                        "{} is not short: demand {} is fully covered by {} available \
+                         (on hand {} + on order {} + WIP {}).",
+                        sku, n.gross_required, n.available, n.on_hand, n.on_order, n.wip
+                    ),
+                ),
+                (None, None) => (
+                    false,
+                    format!("{sku} has no demand in the current plan — nothing is short."),
+                ),
+            };
+            Ok(json!({
+                "sku": sku,
+                "as_of": plan.as_of,
+                "shortage": shortage,
+                "explanation": explanation,
+                "planned_order": planned,
+                "netting": netting,
+            }))
+        }
+        "release_planned_order" => {
+            let key = req_str(args, "key")?.to_string();
+            let as_of = mrp_as_of(args);
+            let demand = mrp_demand_from_args(args)?;
+            to_json(release_planned_order(conn, &as_of, &demand, &key)?)
+        }
+        "list_stock" => to_json(list_stock(conn)?),
+        "set_stock" => {
+            let item_id = req_i64(args, "item_id")?;
+            let on_hand = req_i64(args, "on_hand")?;
+            let on_order = opt_i64(args, "on_order").unwrap_or(0);
+            let wip = opt_i64(args, "wip").unwrap_or(0);
+            to_json(set_stock(conn, item_id, on_hand, on_order, wip)?)
+        }
+        "list_bom" => to_json(list_bom(conn, req_i64(args, "parent_item_id")?)?),
+        "add_bom_line" => to_json(add_bom_line(
+            conn,
+            req_i64(args, "parent_item_id")?,
+            req_i64(args, "component_item_id")?,
+            req_i64(args, "qty_per")?,
+        )?),
+        "list_production_orders" => to_json(list_production_orders(conn)?),
+        "list_purchase_orders" => to_json(list_purchase_orders(conn)?),
+        "receive_purchase_order" => to_json(receive_purchase_order(
+            conn,
+            req_i64(args, "purchase_order_id")?,
+        )?),
+        "complete_production_order" => to_json(complete_production_order(
+            conn,
+            req_i64(args, "production_order_id")?,
+        )?),
         "list_customers" => to_json(list_customers(conn)?),
         "list_items" => to_json(list_items(conn)?),
         "list_quotes" => to_json(list_quotes(conn)?),

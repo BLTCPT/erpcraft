@@ -25,7 +25,20 @@ use std::fmt;
 
 pub use rusqlite;
 
+pub mod audit;
 pub mod configurator;
+pub mod mrp;
+
+pub use audit::{
+    agent_prompt, audit_entry, audit_trail, AuditChainNode, AuditDocRef, AuditFilter, AuditRecord,
+};
+pub use mrp::{
+    add_bom_line, complete_production_order, list_bom, list_production_orders,
+    list_purchase_orders, list_stock, receive_purchase_order, release_planned_order, run_mrp,
+    seed_mrp_demo_if_empty, set_item_planning, set_stock, BomLineView, DemandReason, ItemNetting,
+    MrpDemand, MrpPlan, PlannedComponent, PlannedOrder, ProductionOrderView, PurchaseOrderView,
+    ReleaseOutcome, StockLevelView,
+};
 
 pub use configurator::{
     add_characteristic, config_model_count, config_model_for_item, create_component,
@@ -438,6 +451,50 @@ CREATE TABLE IF NOT EXISTS components (
     cost_delta_cents  INTEGER NOT NULL DEFAULT 0,
     UNIQUE (model_id, code)
 );
+
+-- ---------------------------------------------------------------------------
+-- MRP (MRP_DESIGN.md): planning state. The GL holds inventory value;
+-- these tables hold quantities and released planning documents. Plans
+-- themselves are never stored — a run computes from this state.
+-- items.lead_time_days / items.make_or_buy arrive via ensure_column
+-- (the Day-3 migration pattern), so pre-MRP databases gain them too.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS bom_lines (
+    id                INTEGER PRIMARY KEY,
+    parent_item_id    INTEGER NOT NULL REFERENCES items(id),
+    component_item_id INTEGER NOT NULL REFERENCES items(id),
+    qty_per           INTEGER NOT NULL CHECK (qty_per > 0),
+    UNIQUE (parent_item_id, component_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS stock_levels (
+    item_id  INTEGER PRIMARY KEY REFERENCES items(id),
+    on_hand  INTEGER NOT NULL DEFAULT 0 CHECK (on_hand >= 0),
+    on_order INTEGER NOT NULL DEFAULT 0 CHECK (on_order >= 0),
+    wip      INTEGER NOT NULL DEFAULT 0 CHECK (wip >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS production_orders (
+    id         INTEGER PRIMARY KEY,
+    item_id    INTEGER NOT NULL REFERENCES items(id),
+    qty        INTEGER NOT NULL CHECK (qty > 0),
+    due_date   TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'open'
+               CHECK (status IN ('open','completed','cancelled')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (
+    id         INTEGER PRIMARY KEY,
+    item_id    INTEGER NOT NULL REFERENCES items(id),
+    qty        INTEGER NOT NULL CHECK (qty > 0),
+    due_date   TEXT NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'open'
+               CHECK (status IN ('open','received','cancelled')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -520,6 +577,14 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "invoices", "gl_entry_id", "INTEGER")?;
     ensure_column(conn, "invoices", "cogs_entry_id", "INTEGER")?;
     ensure_column(conn, "payments", "gl_entry_id", "INTEGER")?;
+    // MRP planning attributes on items (MRP_DESIGN.md).
+    ensure_column(
+        conn,
+        "items",
+        "lead_time_days",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "items", "make_or_buy", "TEXT NOT NULL DEFAULT 'buy'")?;
     Ok(())
 }
 

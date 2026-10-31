@@ -131,6 +131,12 @@ pub enum ProposeOutcome {
         prompt: String,
         warning: String,
     },
+    /// A read-only answer (an MRP check): computed live from the
+    /// ledger, nothing created, nothing proposed, nothing posted.
+    Answer {
+        prompt: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,6 +321,8 @@ impl<C: ModelClient> Agent<C> {
             | "record_depreciation" => {
                 self.propose_builder(conn, prompt, &intent, &customers, options)
             }
+            "mrp_check" => self.propose_mrp_check(conn, prompt, &intent, &ctx),
+            "mrp_release" => self.propose_mrp_release(conn, prompt, &intent, &ctx),
             "out_of_scope" => {
                 let topic = intent.topic.as_deref().unwrap_or("that");
                 Ok(ProposeOutcome::OutOfScope {
@@ -323,7 +331,9 @@ impl<C: ModelClient> Agent<C> {
                         "I don't handle {topic} yet. I can invoice shipped units, record \
                          payments, deposits and returns, buy materials on credit, pay \
                          suppliers, issue materials, record labor and production, and \
-                         post rent, interest and depreciation."
+                         post rent, interest and depreciation. I can also check material \
+                         plans — ask \"What are we short on?\" or \"Can we build 200 \
+                         BRK-100 by 2026-11-15?\" — and propose releasing a planned order."
                     ),
                 })
             }
@@ -995,6 +1005,342 @@ impl<C: ModelClient> Agent<C> {
         })))
     }
 
+    // -- MRP intents ---------------------------------------------------
+    //
+    // Planning questions are read-only Answers computed from a live
+    // MRP run (MRP_DESIGN.md: plans are never stored). Releasing a
+    // planned order is a gated Proposal like every other mutation:
+    // the confirmation is rendered from the freshly computed plan,
+    // and confirm runs the one release dispatch call.
+
+    /// Resolve the intent's item reference to a catalog SKU: exact
+    /// SKU (any case) or an item-name mention.
+    fn resolve_sku(&self, ctx: &Ctx, given: Option<&str>) -> Option<String> {
+        let given = given?.trim();
+        if given.is_empty() {
+            return None;
+        }
+        if let Some(item) = ctx.items.iter().find(|i| i.sku.eq_ignore_ascii_case(given)) {
+            return Some(item.sku.clone());
+        }
+        ctx.items
+            .iter()
+            .find(|i| i.name.to_lowercase().contains(&given.to_lowercase()))
+            .map(|i| i.sku.clone())
+    }
+
+    /// The run_mrp / release arguments for the intent's what-if
+    /// demand, when it states one. A stated quantity with no item,
+    /// or an item + quantity with no date, is a clarification — the
+    /// adapter asks rather than guessing a plan.
+    fn mrp_run_args(
+        &self,
+        prompt: &str,
+        intent: &Intent,
+        ctx: &Ctx,
+    ) -> Result<Value, ProposeOutcome> {
+        let mut args = json!({ "as_of": self.today });
+        let sku = self.resolve_sku(ctx, intent.sku.as_deref());
+        match (sku, intent.qty) {
+            (None, Some(_)) => Err(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: "Which item should I plan for? Name a SKU, e.g. BRK-100.".to_string(),
+            }),
+            (Some(sku), Some(qty)) => {
+                let need_date = match intent.need_date.as_deref() {
+                    Some(d) if parse_date(d).is_some() => d.to_string(),
+                    Some(d) => {
+                        return Err(ProposeOutcome::Clarification {
+                            prompt: prompt.to_string(),
+                            question: format!(
+                                "\"{d}\" is not a date I can plan against — use YYYY-MM-DD."
+                            ),
+                        })
+                    }
+                    None => match resolve_day(&self.today, intent.day.as_deref()) {
+                        Ok(d) if intent.day.is_some() => d,
+                        _ => {
+                            return Err(ProposeOutcome::Clarification {
+                                prompt: prompt.to_string(),
+                                question: format!("By when do you need the {sku}?"),
+                            })
+                        }
+                    },
+                };
+                args["demand_sku"] = json!(sku);
+                args["demand_qty"] = json!(qty);
+                args["demand_date"] = json!(need_date);
+                if let Some(config) = &intent.configuration {
+                    args["demand_config"] = config.clone();
+                }
+                Ok(args)
+            }
+            _ => Ok(args),
+        }
+    }
+
+    fn propose_mrp_check(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        ctx: &Ctx,
+    ) -> Result<ProposeOutcome, AgentError> {
+        let args = match self.mrp_run_args(prompt, intent, ctx) {
+            Ok(args) => args,
+            Err(outcome) => return Ok(outcome),
+        };
+        let plan = self.call(conn, "run_mrp", &args)?;
+        let mut out = format!(
+            "MRP run as of {} — computed live from open orders, stock, BOMs, and \
+             configurations; plans are never stored.\n",
+            j_str(&plan, "as_of")
+        );
+        let demand_sku = args.get("demand_sku").and_then(|v| v.as_str());
+        if let Some(sku) = demand_sku {
+            let netting = plan
+                .get("requirements")
+                .and_then(|r| r.as_array())
+                .and_then(|rows| rows.iter().find(|r| j_str(r, "sku") == sku));
+            let planned = plan
+                .get("planned_orders")
+                .and_then(|r| r.as_array())
+                .and_then(|rows| rows.iter().find(|r| j_str(r, "sku") == sku));
+            match (netting, planned) {
+                (Some(n), Some(o)) => {
+                    out.push_str(&format!(
+                        "\n{sku}: demand {} by {}. Available {} (on hand {} + on order {} + \
+                         WIP {}) covers {}; the plan {} {} more, starting {} (due {}).{}\n",
+                        j_i64(n, "gross_required"),
+                        j_str(o, "due_date"),
+                        j_i64(n, "available"),
+                        j_i64(n, "on_hand"),
+                        j_i64(n, "on_order"),
+                        j_i64(n, "wip"),
+                        j_i64(n, "gross_required") - j_i64(n, "net_required"),
+                        if j_str(o, "kind") == "production" {
+                            "builds"
+                        } else {
+                            "buys"
+                        },
+                        j_i64(o, "qty"),
+                        j_str(o, "start_date"),
+                        j_str(o, "due_date"),
+                        if j_i64(o, "days_late") > 0 {
+                            format!(
+                                " That start is already {} day(s) past — this is a shortage.",
+                                j_i64(o, "days_late")
+                            )
+                        } else {
+                            " On time, if it starts then.".to_string()
+                        },
+                    ));
+                    let comps: Vec<String> = o
+                        .get("components")
+                        .and_then(|c| c.as_array())
+                        .map(|rows| {
+                            rows.iter()
+                                .map(|c| format!("{} ×{}", j_str(c, "sku"), j_i64(c, "qty")))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if !comps.is_empty() {
+                        out.push_str(&format!("Components needed: {}.\n", comps.join(", ")));
+                    }
+                }
+                (Some(n), None) => {
+                    out.push_str(&format!(
+                        "\n{sku}: demand {} is fully covered — {} available (on hand {} + \
+                         on order {} + WIP {}). Nothing to plan.\n",
+                        j_i64(n, "gross_required"),
+                        j_i64(n, "available"),
+                        j_i64(n, "on_hand"),
+                        j_i64(n, "on_order"),
+                        j_i64(n, "wip"),
+                    ));
+                }
+                _ => {
+                    out.push_str(&format!("\n{sku} has no demand in this plan.\n"));
+                }
+            }
+        }
+        let shortages = plan
+            .get("shortages")
+            .and_then(|s| s.as_array())
+            .cloned()
+            .unwrap_or_default();
+        if shortages.is_empty() {
+            out.push_str("\nShortages: none — every planned order can still start on time.");
+        } else {
+            out.push_str("\nShortages (planned orders that should already have started):");
+            for s in &shortages {
+                let reasons: Vec<String> = s
+                    .get("reasons")
+                    .and_then(|r| r.as_array())
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|r| {
+                                format!(
+                                    "{} ({} needed, {} covered by stock)",
+                                    j_str(r, "origin"),
+                                    j_i64(r, "qty"),
+                                    j_i64(r, "covered_by_stock")
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "\n- {}: {} {} due {} — start {} is {} day(s) late. Driven by: {}",
+                    j_str(s, "sku"),
+                    j_str(s, "kind"),
+                    j_i64(s, "qty"),
+                    j_str(s, "due_date"),
+                    j_str(s, "start_date"),
+                    j_i64(s, "days_late"),
+                    reasons.join("; ")
+                ));
+            }
+        }
+        if demand_sku.is_none() {
+            let planned_count = plan
+                .get("planned_orders")
+                .and_then(|p| p.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            out.push_str(&format!(
+                "\nPlanned orders in this run: {planned_count}. Ask \"Can we build \
+                 <qty> <SKU> by <date>?\" for a specific check."
+            ));
+        }
+        Ok(ProposeOutcome::Answer {
+            prompt: prompt.to_string(),
+            message: out,
+        })
+    }
+
+    fn propose_mrp_release(
+        &self,
+        conn: &mut Connection,
+        prompt: &str,
+        intent: &Intent,
+        ctx: &Ctx,
+    ) -> Result<ProposeOutcome, AgentError> {
+        let Some(key) = intent
+            .key
+            .as_deref()
+            .map(|k| k.trim())
+            .filter(|k| !k.is_empty())
+        else {
+            return Ok(ProposeOutcome::Clarification {
+                prompt: prompt.to_string(),
+                question: "Which planned order should I release? Planned orders carry \
+                           keys like purchase:FST-SET:2026-11-10:60 — ask me \"What are \
+                           we short on?\" or run list_planned_orders, then name the key."
+                    .to_string(),
+            });
+        };
+        let args = match self.mrp_run_args(prompt, intent, ctx) {
+            Ok(args) => args,
+            Err(outcome) => return Ok(outcome),
+        };
+        let listed = self.call(conn, "list_planned_orders", &args)?;
+        let order = listed
+            .get("planned_orders")
+            .and_then(|p| p.as_array())
+            .and_then(|rows| rows.iter().find(|o| j_str(o, "key") == key).cloned());
+        let Some(order) = order else {
+            return Ok(ProposeOutcome::Refusal {
+                prompt: prompt.to_string(),
+                message: format!(
+                    "No planned order with key '{key}' in the current plan — plans are \
+                     recomputed live and this one is not in it. Check the key with \
+                     list_planned_orders (with the same demand arguments), or ask me \
+                     what we're short on."
+                ),
+            });
+        };
+        let sku = j_str(&order, "sku").to_string();
+        let kind = j_str(&order, "kind").to_string();
+        let qty = j_i64(&order, "qty");
+        let item_name = ctx
+            .items
+            .iter()
+            .find(|i| i.sku == sku)
+            .map(|i| i.name.clone())
+            .unwrap_or_default();
+        let reasons: Vec<String> = order
+            .get("reasons")
+            .and_then(|r| r.as_array())
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        format!(
+                            "{} — {} by this plan ({} covered by stock)",
+                            j_str(r, "origin"),
+                            j_i64(r, "covered_by_plan"),
+                            j_i64(r, "covered_by_stock")
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut confirmation = format!(
+            "Release planned {kind} order — {sku} ×{qty}\n\
+             Item: {sku} — {item_name}\n\
+             Due: {} · Start: {}{}\n\
+             Netting: gross {} − available {} (on hand {} + on order {} + WIP {}) = {} to {}\n\
+             Why:\n{}",
+            j_str(&order, "due_date"),
+            j_str(&order, "start_date"),
+            if j_i64(&order, "days_late") > 0 {
+                format!(" ({} day(s) late)", j_i64(&order, "days_late"))
+            } else {
+                String::new()
+            },
+            j_i64(&order, "gross_required"),
+            j_i64(&order, "on_hand") + j_i64(&order, "on_order") + j_i64(&order, "wip"),
+            j_i64(&order, "on_hand"),
+            j_i64(&order, "on_order"),
+            j_i64(&order, "wip"),
+            j_i64(&order, "net_required"),
+            if kind == "production" { "build" } else { "buy" },
+            reasons
+                .iter()
+                .map(|r| format!("- {r}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        confirmation.push_str(&format!(
+            "\nReleasing creates the {kind} order document and counts these units as {} \
+             supply in the next MRP run. No journal entry posts — value moves only when \
+             real events happen.",
+            if kind == "production" {
+                "work-in-progress"
+            } else {
+                "on-order"
+            }
+        ));
+        let mut gate_args = json!({ "key": key, "as_of": self.today });
+        for field in ["demand_sku", "demand_qty", "demand_date", "demand_config"] {
+            if let Some(v) = args.get(field) {
+                gate_args[field] = v.clone();
+            }
+        }
+        Ok(ProposeOutcome::NeedsConfirmation(Box::new(Proposal {
+            prompt: prompt.to_string(),
+            intent: "mrp_release".to_string(),
+            summary: format!("Release planned {kind} order {key}"),
+            confirmation_text: confirmation,
+            duplicate_warning: None,
+            gate: GateCall::Dispatch {
+                command: "release_planned_order".to_string(),
+                args: gate_args,
+            },
+            draft_invoice_id: None,
+        })))
+    }
+
     // -- Resolution + scans ------------------------------------------
 
     fn customers(&self, conn: &mut Connection) -> Result<Vec<(i64, String)>, AgentError> {
@@ -1325,6 +1671,19 @@ struct Intent {
     day: Option<String>,
     #[serde(default)]
     topic: Option<String>,
+    /// MRP intents: the item a planning question is about.
+    #[serde(default)]
+    sku: Option<String>,
+    /// MRP intents: the needed-by date, `YYYY-MM-DD` as written.
+    #[serde(default)]
+    need_date: Option<String>,
+    /// MRP release: the planned-order key, copied exactly.
+    #[serde(default)]
+    key: Option<String>,
+    /// MRP what-if demand: configuration values for a configured
+    /// item (characteristic code → value).
+    #[serde(default)]
+    configuration: Option<Value>,
 }
 
 /// Extract the intent object from the model's raw reply: the first
