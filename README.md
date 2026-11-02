@@ -45,7 +45,7 @@ trusted:
   evaluated deterministically in the core; selected components roll into
   line price *and* standard cost. AI only authors (behind
   propose → confirm) and explains. See `CONFIGURATOR_DESIGN.md`.
-- **One dispatch table, four doors** — 58 commands served identically to
+- **One dispatch table, four doors** — 85 commands served identically to
   the operator CLI, an MCP server on stdio, the HTTP API, and the agent.
   JSON out, plain-language refusals, exit 0/1/2.
 - **Natural-language agent** — turns plain English into *proposed*
@@ -110,7 +110,7 @@ The CLI door, against the same database:
 
 ```sh
 cargo run -p erpcraft-cli -- trial_balance
-cargo run -p erpcraft-cli -- help        # all 58 commands
+cargo run -p erpcraft-cli -- help        # all 85 commands
 cargo run -p erpcraft-cli -- mcp         # the same table as MCP tools on stdio
 ```
 
