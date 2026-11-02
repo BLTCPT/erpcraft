@@ -25,9 +25,10 @@ real books.
 
 So ERPCraft is built around one idea: **an AI agent should drive the exact
 same commands a human does, propose before it posts, and work on top of a
-ledger whose correctness does not depend on any caller behaving — every
-invariant is enforced by the database itself, and the enforcement has been
-probe-tested from outside, including with raw SQL.**
+ledger whose correctness does not depend on any caller behaving — its
+invariants are enforced by the database itself on every connection the
+application opens, and that enforcement has been probe-tested from outside,
+including with raw SQL.**
 
 The vision is the full ERP: general ledger, order-to-cash, purchasing,
 inventory, manufacturing planning, and reporting, owned by the people who run
